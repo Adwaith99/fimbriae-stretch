@@ -1,0 +1,22 @@
+# Python/cache
+__pycache__/
+*.pyc
+
+# Large MD outputs (ignore everything under these)
+systems/**/00_build/**
+systems/**/10_longNPT/**
+systems/**/20_pulls/**
+logs/**
+
+# Typical GROMACS outputs to ignore anywhere
+**/*.edr
+**/*.xtc
+**/*.tng
+**/*.trr
+**/*.gro
+**/*.tpr
+**/*.cpt
+**/*.log
+**/*.out
+**/*.xvg
+**/slurm-*.out

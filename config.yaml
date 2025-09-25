@@ -1,0 +1,35 @@
+globals:
+  dt_ps: 0.002
+  k_kj_mol_nm2: 100
+  target_extension_nm: 5.0
+  n_reps_default: 10
+  pull_speeds_nm_per_ns: [0.05, 0.10, 0.20]  # optionally add 0.02 later
+
+  slurm:
+    partition: compute_full_node
+    gpus_per_node: 4
+    cpus_per_task: 96
+    time_limit: "1-00:00:00"      # 1 day
+    array_cap: 12                 # cap concurrent tasks
+    gromacs_module: "StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
+
+  # posre mode is local-numbered in molecule .itp (required)
+  posre:
+    force: [1000, 1000, 1000]     # fcx,fcy,fcz
+
+systems:
+  - name: fimA_WT
+    pdb: "systems/fimA_WT/source.pdb"
+    box: [100, 20, 20]            # nm (for build)
+    # molecule itp that contains the ANCHOR chain (posre will be included here)
+    anchor_molecule_itp: "systems/fimA_WT/00_build/topol_chain_A.itp"
+
+    variants:
+      - id: AtoD
+        # selections written as we will type them into make_ndx on clean.pdb
+        anchor: { chain: "A", res: "128-1200" }
+        pulled: { chain: "D", res: "300-360" }
+
+    # override defaults if desired:
+    speeds: [0.05, 0.10, 0.20]
+    n_reps: 12
