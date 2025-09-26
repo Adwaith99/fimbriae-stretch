@@ -63,7 +63,7 @@ DispCorr=no
 EOF
 
 gmx grompp -f em.mdp -c ions.gro -p topol.top -o em.tpr
-gmx mdrun -v -deffnm em
+gmx mdrun -v -deffnm em -ntmpi 4 -ntomp 24
 
 # NVT then NPT at 303 K with mild posres on protein
 cat > nvt.mdp <<'EOF'
@@ -88,7 +88,7 @@ pbc=xyz
 EOF
 
 gmx grompp -f nvt.mdp -c em.gro -r em.gro -p topol.top -o nvt.tpr
-gmx mdrun -v -deffnm nvt
+gmx mdrun -v -deffnm nvt -ntmpi 4 -ntomp 24
 
 cat > npt.mdp <<'EOF'
 define=-DPOSRES
@@ -117,7 +117,7 @@ pbc=xyz
 EOF
 
 gmx grompp -f npt.mdp -c nvt.gro -t nvt.cpt -r nvt.gro -p topol.top -o npt.tpr
-gmx mdrun -v -deffnm npt
+gmx mdrun -v -deffnm npt -ntmpi 4 -ntomp 24
 
 # Final relaxed structure for pulls
 cp -f npt.gro npt_303K_0.gro
