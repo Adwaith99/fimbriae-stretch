@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MODE: em|nvt|npt
 # FC: restraint level (0 => none)
-# FINALFLAG: 0 normal stage, 1 => final NPT (equilibrium MD) with tuned outputs
+# FINALFLAG: 0 normal stage, 1 => final NPT (equilibrium MD) using dt_ps from config
 set -euo pipefail
 
 SYS=${1:?}
@@ -9,20 +9,20 @@ MODE=${2:?}
 TEMPK=${3:?}
 NSTEPS=${4:?}
 FC=${5:?}
-FINAL=${6:?0}
+FINAL=${6:-0}
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 WD="$ROOT/systems/${SYS}/00_build"
 cd "$WD"
 
-# Prepare initial topology/solvent if missing
+# Initial preparation if first time
 if [[ ! -f clean.pdb ]]; then
   FF="charmm36-jul2022"
   [[ -d ${FF}.ff ]] || ln -s "../../../${FF}.ff" .
   gmx pdb2gmx -f input.pdb -o clean.pdb -p topol.top -ff ${FF} -water tip3p
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
   read -r BX BY BZ <<<"$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
+import yaml; c=yaml.safe_load(open("config.yaml"))
 sys=next(s for s in c["systems"] if s["name"]=="$SYS")
 print(*sys["box"])
 PY
@@ -41,7 +41,7 @@ EOF
   printf "13\n" | gmx genion -s ions.tpr -o ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
 fi
 
-# choose previous conf
+# Choose previous conf
 prev_conf="npt_final.gro"
 if [[ ! -f $prev_conf ]]; then
   for c in npt_fc*\.gro nvt_fc*\.gro npt.gro nvt.gro em.gro ions.gro solv.gro boxed.gro aligned.pdb clean.pdb; do
@@ -49,10 +49,19 @@ if [[ ! -f $prev_conf ]]; then
   done
 fi
 
-# build-time dt (keep 1 fs for robust equilibration)
+# Default build timestep: 1 fs
 DT_PS=0.001
 
-# Generate stage MDP
+# If this is the FINAL unrestrained NPT, switch to dt from config (intended 0.002 ps)
+if [[ "$FINAL" == "1" && "$MODE" == "npt" && "$FC" == "0" ]]; then
+  DT_PS=$(python3 - <<'PY'
+import yaml
+print(yaml.safe_load(open("config.yaml"))["globals"]["dt_ps"])
+PY
+)
+fi
+
+# Generate stage MDP (use DT_PS computed above)
 gen_mdp () {
   local mode=$1; local temp=$2; local nsteps=$3; local finalflag=$4
   if [[ "$mode" == "em" ]]; then
@@ -73,7 +82,6 @@ EOF
     return
   fi
 
-  # Common for nvt/npt
   {
     [[ "$FC" != "0" ]] && echo "define=-DPOSRES" || echo "define="
     echo "integrator=md"
@@ -115,13 +123,13 @@ EOF
 
   # Output control
   if [[ "$finalflag" == "1" && "$mode" == "npt" && "$FC" == "0" ]]; then
-    # Equilibrium MD outputs for sampling — read from config
+    # Equilibrium MD outputs; compute strides with the actual DT_PS
+    export DT_PS   # make visible to python below
     python3 - <<'PY' >> stage.mdp
-import yaml
+import os, yaml, math
 g=yaml.safe_load(open("config.yaml"))["globals"]["equilibrium_md"]
-def to_steps(ps): 
-    dt=0.001
-    return int(round(ps/dt))
+dt=float(os.environ.get("DT_PS","0.001"))
+def to_steps(ps): return int(round(ps/dt))
 print("nstxout-compressed =", to_steps(g["xtc_write_ps"]))  # XTC stride
 print("nstenergy           =", to_steps(100.0))              # energies every 100 ps
 print("nstlog              =", to_steps(100.0))              # logs every 100 ps
@@ -129,7 +137,7 @@ print("nstcalcenergy       =", 100)
 print("xtc-precision       =", 1000)
 PY
   else
-    # Tighter but modest output for intermediate stages
+    # Modest output for intermediate stages
     cat >> stage.mdp <<'EOF'
 nstxout-compressed = 50000
 nstenergy           = 10000
@@ -140,7 +148,7 @@ EOF
   fi
 }
 
-# Optional: stage-local posre scaling
+# Stage-local posre scaling if FC>0
 TOP_USE="topol.top"
 if [[ "$FC" != "0" ]]; then
   python3 "$ROOT/scripts/scale_posre.py" posre.itp "posre_stage_${FC}.itp" "$FC"
@@ -158,10 +166,10 @@ OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
 gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
 gmx mdrun -deffnm "${OUT}"
 
-# If final equilibrium NPT: mark and leave artifacts for sampling
+# If final equilibrium NPT, stash artifacts for sampling
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
   cp -f "${OUT}.gro" npt_final.gro
   cp -f "${OUT}.tpr" npt_final.tpr
-  cp -f "${OUT}.xtc" npt_final.xtc
+  [[ -f "${OUT}.xtc" ]] && cp -f "${OUT}.xtc" npt_final.xtc
   touch BUILD_DONE
 fi
