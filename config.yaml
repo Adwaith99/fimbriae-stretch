@@ -3,19 +3,32 @@ globals:
   k_kj_mol_nm2: 100
   target_extension_nm: 5.0
   n_reps_default: 10
-  pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20]  # optionally add 0.02 later
+  pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20]
 
   slurm:
     partition: compute_full_node
     gpus_per_node: 4
     cpus_per_task: 96
-    time_limit: "1-00:00:00"      # 1 day
-    array_cap: 5                 # cap concurrent tasks
+    time_limit: "1-00:00:00"
+    array_cap: 5
     gromacs_module: "StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
 
-  # posre mode is local-numbered in molecule .itp (required)
+  # Position restraints used in build stages (scaled per stage)
   posre:
-    force: [1000, 1000, 1000]     # fcx,fcy,fcz
+    force: [1000, 1000, 1000]
+
+  # >>> NEW: equilibrium MD settings for the final NPT stage
+  equilibrium_md:
+    length_ns: 50.0           # total length of the final NPT segment (production-like)
+    warmup_ns: 10            # discard this from the beginning when sampling
+    sample_every_ps: 100.00    # spacing between sampled frames (for starts)
+    xtc_write_ps: 20.0        # write frequency for final NPT XTC (must divide sample_every_ps)
+    # Slurm walltimes per stage (tight requests)
+    time_em: "00:30:00"
+    time_nvt: "01:00:00"
+    time_npt: "02:30:00"
+    time_npt_final: "24:00:00" # longer because it’s the production-like segment
+
 
 systems:
   - name: fimA_WT

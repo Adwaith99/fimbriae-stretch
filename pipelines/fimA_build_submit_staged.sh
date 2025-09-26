@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Submit a staged build: EM → [ (NVT,NPT) x 5 with decreasing POSRES ] → final NPT (no POSRES)
-# Each stage is a separate Slurm job with its own --time.
+# Submit staged build: EM → (NVT,NPT)x5 ↓POSRES → Final NPT (equilibrium MD, longer)
+# Uses per-stage walltimes and drives final NPT duration from config.
 # USAGE: fimA_build_submit_staged.sh <SYSTEM> <PDB> <BOX_X> <BOX_Y> <BOX_Z> <GMX_MODULE>
 
 set -euo pipefail
@@ -16,78 +16,79 @@ WD="$ROOT/systems/${SYS}/00_build"
 LOG="$ROOT/logs"
 mkdir -p "$WD" "$LOG"
 
-# ===== Stage parameters you can tune =====
-# Restraint schedule (fcx=fcy=fcz)
+# === Config pulls ===
+read -r PARTITION GPUS CPUS TIME_EM TIME_NVT TIME_NPT TIME_NPT_FINAL EQ_NS EQ_WARM_PS EQ_SAMPLE_PS EQ_XTC_PS <<< "$(python3 - <<'PY'
+import yaml, sys
+from math import ceil
+c=yaml.safe_load(open("config.yaml"))
+g=c["globals"]; s=g["slurm"]; eq=g["equilibrium_md"]
+# Print space-separated to read in bash
+print(
+    s["partition"],
+    s["gpus_per_node"],
+    s["cpus_per_task"],
+    eq["time_em"],
+    eq["time_nvt"],
+    eq["time_npt"],
+    eq["time_npt_final"],
+    eq["length_ns"],
+    int(eq["warmup_ns"]*1000),
+    int(eq["sample_every_ps"]),
+    int(eq["xtc_write_ps"]),
+)
+PY
+)"
+
+# Restraint schedule
 FC_LIST=(1000 500 200 100 50)
 
-# Steps per stage
-NVT_STEPS=200000     # 200 ps at 1 fs
-NPT_STEPS=500000     # 500 ps at 1 fs
-FINAL_NPT_STEPS=1000000  # 1 ns no-restraint
+# Stage step counts (kept like before)
+NVT_STEPS=200000
+NPT_STEPS=500000
 
-# Walltimes per stage (HH:MM:SS)
-# Keep these tight to avoid asking the scheduler for unnecessary time.
-TIME_EM="00:30:00"
-TIME_NVT="01:00:00"
-TIME_NPT="02:00:00"
-TIME_NPT_FINAL="06:00:00"   # longer for the final NPT
+# Final NPT steps from desired equilibrium length (dt=0.001 ps here inside equil_stage)
+FINAL_NPT_STEPS=$(python3 - <<PY
+import yaml
+c=yaml.safe_load(open("config.yaml"))
+dt_ps=0.001  # equil_stage uses 1 fs for build; keeping consistent
+eq=c["globals"]["equilibrium_md"]["length_ns"]
+print(int(round(eq*1_000_000/dt_ps)))
+PY
+)
 
-# ========================================
+# 0) Prepare inputs (first time)
+[[ -f "$WD/input.pdb" ]] || cp -f "$ROOT/$PDB_IN" "$WD/input.pdb"
 
-# 0) Prepare inputs (only first time)
-if [[ ! -f "$WD/input.pdb" ]]; then
-  cp -f "$ROOT/$PDB_IN" "$WD/input.pdb"
-fi
-
-# Helper: submit one stage; returns JOBID
-# args: STAGE_NAME MODE TEMPK NSTEPS FC TIME DEPEND_JOBID
 submit_stage () {
-  local STAGE_NAME=$1 MODE=$2 TEMPK=$3 NSTEPS=$4 FC=$5 TIME=$6 DEP=$7
+  local NAME=$1 MODE=$2 TEMP=$3 NSTEPS=$4 FC=$5 FINALFLAG=$6 TIME=$7 DEP=$8
   sbatch ${DEP:+--dependency=afterok:$DEP} <<EOT | awk '{print $4}'
 #!/bin/bash
-#SBATCH --job-name=${STAGE_NAME}_${SYS}
-#SBATCH --partition=$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
-print(c["globals"]["slurm"]["partition"])
-PY
-)
-#SBATCH --gpus-per-node=$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
-print(c["globals"]["slurm"]["gpus_per_node"])
-PY
-)
-#SBATCH --cpus-per-task=$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
-print(c["globals"]["slurm"]["cpus_per_task"])
-PY
-)
+#SBATCH --job-name=${NAME}_${SYS}
+#SBATCH --partition=${PARTITION}
+#SBATCH --gpus-per-node=${GPUS}
+#SBATCH --cpus-per-task=${CPUS}
 #SBATCH --time=${TIME}
-#SBATCH --output=$LOG/${STAGE_NAME}_${SYS}.out
+#SBATCH --output=$LOG/${NAME}_${SYS}.out
 module purge
 module load ${GMX_MOD}
-bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMPK" "$NSTEPS" "$FC"
+bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG"
 EOT
 }
 
-# ---- submit chain ----
-
-# EM (short)
-EM_ID=$(submit_stage "em" "em" 0 50000 0 "${TIME_EM}" "")
-echo "Submitted EM: $EM_ID"
-
-# Five pairs: (NVT, NPT) with decreasing restraints
+# EM
+EM_ID=$(submit_stage "em" "em" 0 50000 0 0 "${TIME_EM}" "")
+echo "EM: $EM_ID"
 DEP="$EM_ID"
-for FC in "${FC_LIST[@]}"; do
-  NVT_ID=$(submit_stage "nvt_fc${FC}" "nvt" 303.15 ${NVT_STEPS} ${FC} "${TIME_NVT}" "$DEP")
-  echo "Submitted NVT fc=${FC}: $NVT_ID"
-  DEP="$NVT_ID"
 
-  NPT_ID=$(submit_stage "npt_fc${FC}" "npt" 303.15 ${NPT_STEPS} ${FC} "${TIME_NPT}" "$DEP")
-  echo "Submitted NPT fc=${FC}: $NPT_ID"
-  DEP="$NPT_ID"
+# (NVT,NPT) × 5 with decreasing restraints
+for FC in "${FC_LIST[@]}"; do
+  NVT_ID=$(submit_stage "nvt_fc${FC}" "nvt" 303.15 ${NVT_STEPS} ${FC} 0 "${TIME_NVT}" "$DEP")
+  echo "NVT fc=${FC}: $NVT_ID"; DEP="$NVT_ID"
+  NPT_ID=$(submit_stage "npt_fc${FC}" "npt" 303.15 ${NPT_STEPS} ${FC} 0 "${TIME_NPT}" "$DEP")
+  echo "NPT fc=${FC}: $NPT_ID"; DEP="$NPT_ID"
 done
 
-# Final NPT without restraints (longer walltime)
-FINAL_ID=$(submit_stage "npt_final" "npt" 303.15 ${FINAL_NPT_STEPS} 0 "${TIME_NPT_FINAL}" "$DEP")
-echo "Submitted final NPT (no restraints): $FINAL_ID"
+# Final NPT: equilibrium MD segment (longer) with tuned output
+FINAL_ID=$(submit_stage "npt_final" "npt" 303.15 ${FINAL_NPT_STEPS} 0 1 "${TIME_NPT_FINAL}" "$DEP")
+echo "Final NPT: $FINAL_ID (equilibrium MD)"
 echo "Chain submitted. Final job id: $FINAL_ID"

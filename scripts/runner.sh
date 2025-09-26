@@ -23,9 +23,19 @@ RUN_DIR="$ROOT/systems/$system/20_pulls/${variant}/v$(printf "%.2f" "$speed")/k$
 mkdir -p "$RUN_DIR"; cd "$RUN_DIR"
 
 # 3) materials
-BASE_GRO="$ROOT/systems/$system/00_build/npt_303K_0.gro"
+STARTS_DIR="$ROOT/systems/$system/20_pulls/_starts"
+START_GRO="$STARTS_DIR/rep$(printf "%03d" "$rep").gro"
+BASE_GRO_FALLBACK="$ROOT/systems/$system/00_build/npt_final.gro"
 TOP_TPR="$ROOT/systems/$system/00_build/topol.tpr"
 TOP_TOP="$ROOT/systems/$system/00_build/topol.top"
+
+if [[ -f "$START_GRO" ]]; then
+  echo "Using sampled start: $START_GRO"
+  cp -f "$START_GRO" start.gro
+else
+  echo "Sampled start not found; using fallback: $BASE_GRO_FALLBACK"
+  cp -f "$BASE_GRO_FALLBACK" start.gro
+fi
 
 # 4) build indices & local posre (once per system+variant)
 if [[ ! -s "$ROOT/indices/$system/${variant}_pull.ndx" ]] || [[ ! -s "$ROOT/indices/$system/${variant}_posre_anchor_local.itp" ]]; then
@@ -36,14 +46,14 @@ fi
 cp -f "$ROOT/indices/$system/${variant}_pull.ndx" pull.ndx
 cp -f "$ROOT/indices/$system/${variant}_posre_anchor_local.itp" posre_anchor_local.itp
 
-# 5) compute COM distance for init
-gmx distance -s "$BASE_GRO" -f "$BASE_GRO" -n pull.ndx \
+# 5) COM distance for init
+gmx distance -s start.gro -f start.gro -n pull.ndx \
   -select 'com of group "Anchor" plus com of group "Pulled"' -oall comdist.xvg >/dev/null 2>&1 || true
 PINIT=$(awk '!/^[@#]/{last=$2} END{printf("%.3f\n",(last?last:0))}' comdist.xvg)
 
 # 6) make MDP from template
 python3 - "$ROOT" "$speed" "$PINIT" <<'PY'
-import sys, yaml, math, pathlib
+import sys, yaml, pathlib
 ROOT, rate, pinit = pathlib.Path(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])
 cfg = yaml.safe_load(open(ROOT/"config.yaml"))
 tpl = (ROOT/"templates"/"pull.tpl.mdp").read_text()
@@ -61,7 +71,7 @@ print(f"Wrote pull.mdp (nsteps={nsteps})")
 PY
 
 # 7) grompp + mdrun (-append)
-gmx grompp -f pull.mdp -c "$BASE_GRO" -p "$TOP_TOP" -n pull.ndx -o pull.tpr -D POSRES_ANCHOR_LOCAL
+gmx grompp -f pull.mdp -c start.gro -p "$TOP_TOP" -n pull.ndx -o pull.tpr -D POSRES_ANCHOR_LOCAL
 if [[ -f pull.cpt ]]; then
   gmx mdrun -deffnm pull -cpi pull.cpt -append -maxh 24
 else
