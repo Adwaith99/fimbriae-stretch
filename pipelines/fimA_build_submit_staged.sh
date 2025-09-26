@@ -51,7 +51,7 @@ PY
 )
 
 # 0) Prepare inputs (first time only)
-[[ -f "$WD/input.pdb" ]] || cp -f "$ROOT/$PDB_IN" "$WD/input.pdb"
+[[ -f "$WD/input.pdb" ]] || cp -f "$PDB_IN" "$WD/input.pdb"
 
 submit_stage () {
   local NAME=$1 MODE=$2 TEMP=$3 NSTEPS=$4 FC=$5 FINALFLAG=$6 TIME=$7 DEP=$8

@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 python3 "$ROOT/scripts/generate_manifest.py" >/dev/null
 
 PARTITION=$(python3 - <<PY
-import yaml,sys; c=yaml.safe_load(open("$ROOT/config.yaml"))
+import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
 print(c["globals"]["slurm"]["partition"])
 PY
 )
@@ -19,7 +19,15 @@ while IFS=, read -r system pdb box build_status; do
   if [[ "$build_status" != "DONE" ]]; then
     echo "Submitting staged build for $system..."
     read -r BX BY BZ <<<"$box"
-    bash "$ROOT/pipelines/fimA_build_submit_staged.sh" "${system}" "$ROOT/${pdb}" ${BX:-100} ${BY:-20} ${BZ:-20} "${GMXMOD}"
+
+    # If pdb is relative, resolve relative to project root
+    if [[ "$pdb" = /* ]]; then
+      PDB_PATH="$pdb"
+    else
+      PDB_PATH="$ROOT/$pdb"
+    fi
+
+    bash "$ROOT/pipelines/fimA_build_submit_staged.sh" "${system}" "$PDB_PATH" ${BX:-100} ${BY:-20} ${BZ:-20} "${GMXMOD}"
   else
     echo "Build already DONE for $system"
   fi
