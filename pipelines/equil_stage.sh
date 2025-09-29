@@ -96,6 +96,7 @@ integrator=steep
 nsteps=50000
 emtol=100
 emstep=0.001
+constraints=none
 cutoff-scheme=Verlet
 coulombtype=PME
 rcoulomb=1.2
@@ -188,7 +189,7 @@ gen_mdp "$MODE" "$TEMPK" "$NSTEPS" "$FINAL"
 
 OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
 gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
-gmx mdrun -deffnm "${OUT}"
+gmx mdrun -v -deffnm "${OUT}"
 
 # Final equilibrium NPT: stash artifacts
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
