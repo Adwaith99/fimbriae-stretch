@@ -3,15 +3,17 @@ ROOT  := $(shell pwd)
 
 help:
 	@echo "Targets (run on the cluster login node):"
-	@echo "  pull             - git pull (rebase) latest code"
-	@echo "  validate         - sanity check config.yaml"
-	@echo "  manifest         - (re)generate manifests"
-	@echo "  build            - submit system build jobs (only if needed)"
-	@echo "  pulls            - submit SMD array over PENDING rows"
-	@echo "  status           - show your Slurm queue"
-	@echo "  tail-build SYS=...      - tail build log for a system"
-	@echo "  tail-pull  A=JOBID a=TASKID - tail a pull array task log"
-	@echo "  cancel A=JOBID    - cancel a Slurm job/array"
+	@echo "  pull                 - git pull (rebase) latest code"
+	@echo "  validate             - sanity check config.yaml"
+	@echo "  manifest             - (re)generate manifests"
+	@echo "  prep SYS=...         - run system preparation on login node (up to ions.gro)"
+	@echo "  prep-em SYS=...      - prep + EM grompp compile (no run)"
+	@echo "  build                - submit staged build chain (queued)"
+	@echo "  pulls                - submit SMD array over PENDING rows"
+	@echo "  status               - show your Slurm queue"
+	@echo "  tail-build SYS=...   - tail build log for a system"
+	@echo "  tail-pull A=ID a=TID - tail a pull array task log"
+	@echo "  cancel A=ID          - cancel a Slurm job/array"
 
 pull:
 	git pull --rebase
@@ -22,6 +24,16 @@ validate:
 manifest:
 	python3 scripts/generate_manifest.py
 
+# --- New: prep-only on login node ---
+prep:
+	@if [ -z "$(SYS)" ]; then echo "Usage: make prep SYS=<SYSTEM_NAME>"; exit 2; fi
+	bash pipelines/build_preflight.sh $(SYS)
+
+prep-em:
+	@if [ -z "$(SYS)" ]; then echo "Usage: make prep-em SYS=<SYSTEM_NAME>"; exit 2; fi
+	bash pipelines/build_preflight.sh $(SYS) --em-grompp
+
+# --- Submit queued jobs as before ---
 build: manifest
 	bash scripts/submit_builds.sh
 
