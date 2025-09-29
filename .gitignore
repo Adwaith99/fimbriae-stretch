@@ -20,3 +20,7 @@ logs/**
 **/*.out
 **/*.xvg
 **/slurm-*.out
+
+
+#FF file
+charmm36-jul2022.ff
