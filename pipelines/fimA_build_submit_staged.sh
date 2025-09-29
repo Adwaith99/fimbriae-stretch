@@ -33,20 +33,20 @@ print(
 PY
 )"
 
-# Restraint schedule (unchanged)
+# Restraint schedule
 FC_LIST=(1000 500 200 100 50)
 
 # Stage step counts (equilibration phases keep 1 fs as in equil_stage.sh)
 NVT_STEPS=200000
 NPT_STEPS=500000
 
-# >>> Final NPT steps: use dt_ps from config (intended 0.002 ps)
+# Final NPT steps: use dt_ps from config (intended 0.002 ps)
 FINAL_NPT_STEPS=$(python3 - <<'PY'
 import yaml, math
 c=yaml.safe_load(open("config.yaml"))
 dt_ps=float(c["globals"]["dt_ps"])           # e.g., 0.002
 length_ns=float(c["globals"]["equilibrium_md"]["length_ns"])
-print(int(round(length_ns*1_000_000/dt_ps))) # steps = (ns*1e6 ps/ns)/dt_ps
+print(int(round(length_ns*1_000_000/dt_ps)))
 PY
 )
 
@@ -65,7 +65,7 @@ submit_stage () {
 #SBATCH --output=$LOG/${NAME}_${SYS}.out
 module purge
 module load ${GMX_MOD}
-bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG"
+bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG" "${BOX_X}" "${BOX_Y}" "${BOX_Z}"
 EOT
 }
 

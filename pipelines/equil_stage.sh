@@ -2,6 +2,7 @@
 # MODE: em|nvt|npt
 # FC: restraint level (0 => none)
 # FINALFLAG: 0 normal stage, 1 => final NPT (equilibrium MD) using dt_ps from config
+# BOX_X/Y/Z: box dimensions in nm (passed from submitter)
 set -euo pipefail
 
 SYS=${1:?}
@@ -10,25 +11,57 @@ TEMPK=${3:?}
 NSTEPS=${4:?}
 FC=${5:?}
 FINAL=${6:-0}
+BOX_X=${7:-}
+BOX_Y=${8:-}
+BOX_Z=${9:-}
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 WD="$ROOT/systems/${SYS}/00_build"
 cd "$WD"
 
-# Initial preparation if first time
+# --- helper: pick previous conf sensibly ---
+pick_prev_conf() {
+  # Preference order: final → latest restrained NPT/NVT → EM → ions → solv → boxed → aligned → clean
+  for c in \
+    npt_final.gro \
+    npt_fc1000.gro npt_fc500.gro npt_fc200.gro npt_fc100.gro npt_fc50.gro \
+    nvt_fc1000.gro nvt_fc500.gro nvt_fc200.gro nvt_fc100.gro nvt_fc50.gro \
+    em.gro ions.gro solv.gro boxed.gro aligned.pdb clean.pdb
+  do
+    [[ -f "$c" ]] && { echo "$c"; return; }
+  done
+  echo "clean.pdb"
+}
+
+# --- preparation (only if missing) ---
 if [[ ! -f clean.pdb ]]; then
   FF="charmm36-jul2022"
   [[ -d ${FF}.ff ]] || ln -s "../../../${FF}.ff" .
+
+  # Expect input.pdb already copied by submitter
+  if [[ ! -f input.pdb ]]; then
+    echo "ERROR: input.pdb missing in $WD" >&2
+    exit 2
+  fi
+
   gmx pdb2gmx -f input.pdb -o clean.pdb -p topol.top -ff ${FF} -water tip3p
+
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
-  read -r BX BY BZ <<<"$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("config.yaml"))
-sys=next(s for s in c["systems"] if s["name"]=="$SYS")
-print(*sys["box"])
+
+  # Prefer BOX from args; fall back to config if not provided
+  if [[ -z "$BOX_X" || -z "$BOX_Y" || -z "$BOX_Z" ]]; then
+    read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - <<PY
+import yaml
+c=yaml.safe_load(open("$ROOT/config.yaml"))
+s=next(x for x in c["systems"] if x["name"]=="$SYS")
+print(*s["box"])
 PY
 )"
-  gmx editconf -f aligned.pdb -o boxed.gro -c -box ${BX} ${BY} ${BZ} -bt triclinic
+  fi
+
+  gmx editconf -f aligned.pdb -o boxed.gro -c -box ${BOX_X} ${BOX_Y} ${BOX_Z} -bt triclinic
   gmx solvate -cp boxed.gro -cs spc216.gro -o solv.gro -p topol.top
+
   cat > ions.mdp <<'EOF'
 integrator=steep
 nsteps=2000
@@ -37,22 +70,15 @@ cutoff-scheme=Verlet
 rcoulomb=1.2
 rvdw=1.2
 EOF
+
   gmx grompp -f ions.mdp -c solv.gro -p topol.top -o ions.tpr
   printf "13\n" | gmx genion -s ions.tpr -o ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
 fi
 
-# Choose previous conf
-prev_conf="npt_final.gro"
-if [[ ! -f $prev_conf ]]; then
-  for c in npt_fc*\.gro nvt_fc*\.gro npt.gro nvt.gro em.gro ions.gro solv.gro boxed.gro aligned.pdb clean.pdb; do
-    [[ -f $c ]] && prev_conf="$c"
-  done
-fi
+prev_conf="$(pick_prev_conf)"
 
-# Default build timestep: 1 fs
+# --- timestep selection ---
 DT_PS=0.001
-
-# If this is the FINAL unrestrained NPT, switch to dt from config (intended 0.002 ps)
 if [[ "$FINAL" == "1" && "$MODE" == "npt" && "$FC" == "0" ]]; then
   DT_PS=$(python3 - <<'PY'
 import yaml
@@ -61,7 +87,7 @@ PY
 )
 fi
 
-# Generate stage MDP (use DT_PS computed above)
+# --- write stage MDP ---
 gen_mdp () {
   local mode=$1; local temp=$2; local nsteps=$3; local finalflag=$4
   if [[ "$mode" == "em" ]]; then
@@ -121,12 +147,10 @@ EOF
     } >> stage.mdp
   fi
 
-  # Output control
   if [[ "$finalflag" == "1" && "$mode" == "npt" && "$FC" == "0" ]]; then
-    # Equilibrium MD outputs; compute strides with the actual DT_PS
-    export DT_PS   # make visible to python below
+    export DT_PS
     python3 - <<'PY' >> stage.mdp
-import os, yaml, math
+import os, yaml
 g=yaml.safe_load(open("config.yaml"))["globals"]["equilibrium_md"]
 dt=float(os.environ.get("DT_PS","0.001"))
 def to_steps(ps): return int(round(ps/dt))
@@ -137,7 +161,6 @@ print("nstcalcenergy       =", 100)
 print("xtc-precision       =", 1000)
 PY
   else
-    # Modest output for intermediate stages
     cat >> stage.mdp <<'EOF'
 nstxout-compressed = 50000
 nstenergy           = 10000
@@ -148,7 +171,7 @@ EOF
   fi
 }
 
-# Stage-local posre scaling if FC>0
+# --- stage-local posre if FC>0 ---
 TOP_USE="topol.top"
 if [[ "$FC" != "0" ]]; then
   python3 "$ROOT/scripts/scale_posre.py" posre.itp "posre_stage_${FC}.itp" "$FC"
@@ -160,13 +183,14 @@ if [[ "$FC" != "0" ]]; then
   TOP_USE="topol_stage.top"
 fi
 
+# --- run the stage ---
 gen_mdp "$MODE" "$TEMPK" "$NSTEPS" "$FINAL"
 
 OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
 gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
 gmx mdrun -deffnm "${OUT}"
 
-# If final equilibrium NPT, stash artifacts for sampling
+# Final equilibrium NPT: stash artifacts
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
   cp -f "${OUT}.gro" npt_final.gro
   cp -f "${OUT}.tpr" npt_final.tpr
