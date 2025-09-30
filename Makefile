@@ -14,6 +14,8 @@ help:
 	@echo "  tail-build SYS=...   - tail build log for a system"
 	@echo "  tail-pull A=ID a=TID - tail a pull array task log"
 	@echo "  cancel A=ID          - cancel a Slurm job/array"
+	@echo "  reset SYS=...        - wipe manifests + build outputs for one system"
+	@echo "  reset-all            - wipe manifests + build outputs for all systems"
 
 pull:
 	git pull --rebase
@@ -24,7 +26,7 @@ validate:
 manifest:
 	python3 scripts/generate_manifest.py
 
-# --- New: prep-only on login node ---
+# --- Prep-only on login node ---
 prep:
 	@if [ -z "$(SYS)" ]; then echo "Usage: make prep SYS=<SYSTEM_NAME>"; exit 2; fi
 	bash pipelines/build_preflight.sh $(SYS)
@@ -33,7 +35,7 @@ prep-em:
 	@if [ -z "$(SYS)" ]; then echo "Usage: make prep-em SYS=<SYSTEM_NAME>"; exit 2; fi
 	bash pipelines/build_preflight.sh $(SYS) --em-grompp
 
-# --- Submit queued jobs as before ---
+# --- Submit queued jobs ---
 build: manifest
 	bash scripts/submit_builds.sh
 
@@ -54,3 +56,20 @@ tail-pull:
 cancel:
 	@if [ -z "$(A)" ]; then echo "Usage: make cancel A=<job_or_array_id>"; exit 2; fi
 	scancel $(A)
+
+# --- Reset helpers ---
+reset:
+	@if [ -z "$(SYS)" ]; then echo "Usage: make reset SYS=<SYSTEM_NAME>"; exit 2; fi
+	@echo "Resetting system: $(SYS)"
+	@rm -f manifests/*.csv
+	@rm -rf systems/$(SYS)/00_build systems/$(SYS)/20_pulls indices/$(SYS)
+
+reset-all:
+	@echo "Resetting ALL systems + manifests"
+	@rm -f manifests/*.csv
+	@for d in systems/*; do \
+		if [ -d "$$d" ]; then \
+			rm -rf "$$d/00_build" "$$d/20_pulls"; \
+		fi; \
+	done
+	@rm -rf indices/*
