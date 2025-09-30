@@ -84,12 +84,13 @@ gen_mdp () {
   local mode=$1; local temp=$2; local nsteps=$3; local finalflag=$4
 
   if [[ "$mode" == "em" ]]; then
-    # Keep your EM behavior; add your own settings (e.g., constraints=none) if desired.
+    # EM stage: explicit constraints=none, so bonds are flexible during minimization
     cat > stage.mdp <<'EOF'
 integrator=steep
 nsteps=50000
 emtol=100
 emstep=0.001
+constraints=none
 cutoff-scheme=Verlet
 coulombtype=PME
 rcoulomb=1.2
@@ -98,24 +99,20 @@ vdw-modifier=Force-switch
 rvdw_switch=1.0
 rvdw=1.2
 pbc=xyz
-constraints=none
 EOF
     return
   fi
 
-  # MDP defines for restrained vs unrestrained
   DEF=""
   if [[ "$FC" != "0" ]]; then
     DEF="-DPOSRES -DPOSRE_FC=${FC}"
   fi
 
-  # Default output/energy calc stride for intermediate stages
   local nstcalc=200
   local nstxoutc=50000
   local nstenergy=10000
   local nstlog=10000
 
-  # Final eq NPT gets computed strides (still keep COM removal exactly as you have it)
   if [[ "$finalflag" == "1" && "$mode" == "npt" && "$FC" == "0" ]]; then
     export DT_PS
     read -r nstxoutc nstcalc nstenergy nstlog <<< "$(python3 - <<'PY'
@@ -147,13 +144,11 @@ PY
     echo "rvdw=1.2"
     echo "coulombtype=PME"
     echo "pbc=xyz"
-    # Outputs / energy calc
     echo "nstxout-compressed = ${nstxoutc}"
     echo "nstenergy           = ${nstenergy}"
     echo "nstlog              = ${nstlog}"
     echo "nstcalcenergy       = ${nstcalc}"
-    # >>> Fix NOTE 1: match nstcomm to nstcalcenergy (leave your COM removal mode untouched)
-    echo "nstcomm             = ${nstcalc}"
+    echo "nstcomm             = ${nstcalc}"   # silence NOTE 1; COM removal untouched otherwise
     echo "xtc-precision       = 1000"
   } > stage.mdp
 
@@ -176,13 +171,42 @@ PY
   fi
 }
 
-TOP_USE="topol.top"   # keep canonical topology (POSRE_FC via MDP defines)
+TOP_USE="topol.top"
 gen_mdp "$MODE" "$TEMPK" "$NSTEPS" "$FINAL"
 
-OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
-gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
-gmx mdrun -v  -deffnm "${OUT}" ${GMX_MDRUN_FLAGS:-}
+# ---------- build GROMACS threading flags (GPU) ----------
+# If user provided GMX_MDRUN_FLAGS, we honor/append. Otherwise, construct:
+if [[ -z "${GMX_MDRUN_FLAGS:-}" ]]; then
+  # Detect resources from Slurm, else fall back to config.yaml
+  GPUS_ON_NODE=${SLURM_GPUS_ON_NODE:-$(python3 - <<'PY'
+import yaml
+print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gpus_per_node"])
+PY
+)}
+  CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-$(python3 - <<'PY'
+import yaml
+print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["cpus_per_task"])
+PY
+)}
 
+  # Your preferred layout: ntmpi = gpus * 2 ; ntomp = cpus/ntmpi (>=1)
+  NTMPI=$(( GPUS_ON_NODE*2 ))
+  (( NTMPI<1 )) && NTMPI=1
+  NTOMP=$(( CPUS_PER_TASK / NTMPI ))
+  (( NTOMP<1 )) && NTOMP=1
+
+  export OMP_NUM_THREADS=$NTOMP
+  export GMX_ENABLE_DIRECT_GPU_COMM=1
+
+  GMX_MDRUN_FLAGS="-ntmpi $NTMPI -ntomp $NTOMP -nb gpu -bonded gpu -pme gpu -update gpu -npme 1"
+fi
+
+OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
+
+# Verbose progress (-v) kept; append any extra flags from env
+gmx mdrun -v -deffnm "${OUT}" ${GMX_MDRUN_FLAGS}
+
+# ---------- finalize ----------
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
   cp -f "${OUT}.gro" npt_final.gro
   cp -f "${OUT}.tpr" npt_final.tpr
