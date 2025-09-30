@@ -100,6 +100,7 @@ vdw-modifier=Force-switch
 rvdw_switch=1.0
 rvdw=1.2
 pbc=xyz
+constraints=none
 EOF
     return
   fi
@@ -184,7 +185,7 @@ gen_mdp "$MODE" "$TEMPK" "$NSTEPS" "$FINAL"
 
 OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
 gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
-gmx mdrun  -deffnm "${OUT}" ${GMX_MDRUN_FLAGS:-}
+gmx mdrun -v -deffnm "${OUT}" ${GMX_MDRUN_FLAGS:-}
 
 # Final equilibrium NPT: stash artifacts
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
