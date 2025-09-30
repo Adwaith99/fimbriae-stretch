@@ -19,7 +19,6 @@ ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 WD="$ROOT/systems/${SYS}/00_build"
 cd "$WD"
 
-# --- helper: pick previous conf sensibly ---
 pick_prev_conf() {
   for c in \
     npt_final.gro \
@@ -32,17 +31,15 @@ pick_prev_conf() {
   echo "clean.pdb"
 }
 
-# --- preparation (only if missing) ---
+# ---------- preparation (only if missing) ----------
 if [[ ! -f clean.pdb ]]; then
   FF="charmm36-jul2022"
   [[ -d ${FF}.ff ]] || ln -s "../../../${FF}.ff" .
-
   [[ -f input.pdb ]] || { echo "ERROR: input.pdb missing in $WD" >&2; exit 2; }
 
   gmx pdb2gmx -f input.pdb -o clean.pdb -p topol.top -ff ${FF} -water tip3p
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
 
-  # Box (from args; fallback to config)
   if [[ -z "$BOX_X" || -z "$BOX_Y" || -z "$BOX_Z" ]]; then
     read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - <<PY
 import yaml
@@ -66,13 +63,13 @@ EOF
   gmx grompp -f ions.mdp -c solv.gro -p topol.top -o ions.tpr
   printf "13\n" | gmx genion -s ions.tpr -o ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
 
-  # Patch per-chain posre*.itp once to use the POSRE_FC macro
+  # Ensure per-chain posre files use POSRE_FC macro (run once)
   python3 "$ROOT/scripts/patch_posre_macros.py"
 fi
 
 prev_conf="$(pick_prev_conf)"
 
-# --- timestep selection ---
+# ---------- timestep selection ----------
 DT_PS=0.001
 if [[ "$FINAL" == "1" && "$MODE" == "npt" && "$FC" == "0" ]]; then
   DT_PS=$(python3 - <<'PY'
@@ -82,11 +79,12 @@ PY
 )
 fi
 
-# --- write stage MDP ---
+# ---------- write stage MDP ----------
 gen_mdp () {
   local mode=$1; local temp=$2; local nsteps=$3; local finalflag=$4
+
   if [[ "$mode" == "em" ]]; then
-    # Keep your EM behavior; add your preferred EM settings here (e.g., constraints = none).
+    # Keep your EM behavior; add your own settings (e.g., constraints=none) if desired.
     cat > stage.mdp <<'EOF'
 integrator=steep
 nsteps=50000
@@ -105,13 +103,29 @@ EOF
     return
   fi
 
-  # Build the define line:
-  # - always enable POSRES for restrained stages
-  # - inject numeric POSRE_FC for restrained stages
-  # - leave empty for unrestrained stages
+  # MDP defines for restrained vs unrestrained
   DEF=""
   if [[ "$FC" != "0" ]]; then
     DEF="-DPOSRES -DPOSRE_FC=${FC}"
+  fi
+
+  # Default output/energy calc stride for intermediate stages
+  local nstcalc=200
+  local nstxoutc=50000
+  local nstenergy=10000
+  local nstlog=10000
+
+  # Final eq NPT gets computed strides (still keep COM removal exactly as you have it)
+  if [[ "$finalflag" == "1" && "$mode" == "npt" && "$FC" == "0" ]]; then
+    export DT_PS
+    read -r nstxoutc nstcalc nstenergy nstlog <<< "$(python3 - <<'PY'
+import os,yaml
+g=yaml.safe_load(open("config.yaml"))["globals"]["equilibrium_md"]
+dt=float(os.environ.get("DT_PS","0.001"))
+def steps(ps): return int(round(ps/dt))
+print(steps(g["xtc_write_ps"]), 100, steps(100.0), steps(100.0))
+PY
+)"
   fi
 
   {
@@ -133,6 +147,14 @@ EOF
     echo "rvdw=1.2"
     echo "coulombtype=PME"
     echo "pbc=xyz"
+    # Outputs / energy calc
+    echo "nstxout-compressed = ${nstxoutc}"
+    echo "nstenergy           = ${nstenergy}"
+    echo "nstlog              = ${nstlog}"
+    echo "nstcalcenergy       = ${nstcalc}"
+    # >>> Fix NOTE 1: match nstcomm to nstcalcenergy (leave your COM removal mode untouched)
+    echo "nstcomm             = ${nstcalc}"
+    echo "xtc-precision       = 1000"
   } > stage.mdp
 
   if [[ "$mode" == "nvt" ]]; then
@@ -152,42 +174,15 @@ EOF
       echo "compressibility=4.5e-5"
     } >> stage.mdp
   fi
-
-  if [[ "$finalflag" == "1" && "$mode" == "npt" && "$FC" == "0" ]]; then
-    export DT_PS
-    python3 - <<'PY' >> stage.mdp
-import os, yaml
-g=yaml.safe_load(open("config.yaml"))["globals"]["equilibrium_md"]
-dt=float(os.environ.get("DT_PS","0.001"))
-def to_steps(ps): return int(round(ps/dt))
-print("nstxout-compressed =", to_steps(g["xtc_write_ps"]))
-print("nstenergy           =", to_steps(100.0))
-print("nstlog              =", to_steps(100.0))
-print("nstcalcenergy       =", 100)
-print("xtc-precision       =", 1000)
-PY
-  else
-    cat >> stage.mdp <<'EOF'
-nstxout-compressed = 50000
-nstenergy           = 10000
-nstlog              = 10000
-nstcalcenergy       = 200
-xtc-precision       = 1000
-EOF
-  fi
 }
 
-# --- topology to use: always the canonical topol.top ---
-TOP_USE="topol.top"   # No temp top; macros come from MDP 'define='
-
-# --- run the stage ---
+TOP_USE="topol.top"   # keep canonical topology (POSRE_FC via MDP defines)
 gen_mdp "$MODE" "$TEMPK" "$NSTEPS" "$FINAL"
 
 OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
 gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
-gmx mdrun -v -deffnm "${OUT}" ${GMX_MDRUN_FLAGS:-}
+gmx mdrun -v  -deffnm "${OUT}" ${GMX_MDRUN_FLAGS:-}
 
-# Final equilibrium NPT: stash artifacts
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
   cp -f "${OUT}.gro" npt_final.gro
   cp -f "${OUT}.tpr" npt_final.tpr
