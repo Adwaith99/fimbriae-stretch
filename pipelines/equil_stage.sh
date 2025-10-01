@@ -39,15 +39,15 @@ build_mdrun_flags() {
     return
   fi
 
-  # helper: extract last integer from a string like "h100:4" -> 4
+  # helper: extract last integer from a string like "gpu:h100:4" -> 4
   _int_last () {
     local s="$1"
     local n
     n="$(echo "$s" | sed -E 's/.*[^0-9]([0-9]+)[^0-9]*$/\1/;t;d')" || true
-    if [[ -z "$n" ]]; then echo 1; else echo "$n"; fi
+    if [[ -z "$n" ]]; then echo 0; else echo "$n"; fi
   }
 
-  # GPUs: SLURM may give "gpu:h100:4" or "h100:4" or just "4"
+  # ---- GPUs ----
   local RAW_GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
   if [[ -z "$RAW_GPUS" ]]; then
     RAW_GPUS="$(python3 - <<'PY'
@@ -59,33 +59,59 @@ PY
   local GPUS="$(_int_last "$RAW_GPUS")"
   (( GPUS < 1 )) && GPUS=1
 
-  # CPUs:
-  # Prefer per-task; fall back to per-gpu × gpus; else config.
-  local RAW_CPUS="${SLURM_CPUS_PER_TASK:-}"
-  if [[ -z "$RAW_CPUS" && -n "${SLURM_CPUS_PER_GPU:-}" ]]; then
-    RAW_CPUS=$(( $(_int_last "${SLURM_CPUS_PER_GPU}") * GPUS ))
+  # ---- CPUs (robust) ----
+  # 1) Try SLURM_CPUS_PER_TASK if set and >0
+  local CPUS="$(_int_last "${SLURM_CPUS_PER_TASK:-0}")"
+
+  # 2) If that failed, derive from the job cgroup with taskset
+  if (( CPUS < 1 )); then
+    if command -v taskset >/dev/null 2>&1; then
+      # Example: "pid 12345's current affinity list: 0-5,8,10-15"
+      local aff; aff="$(taskset -pc $$ 2>/dev/null | awk -F': ' 'NR==1{print $2}')" || aff=""
+      if [[ -n "$aff" ]]; then
+        # Count CPU IDs in a list with ranges, e.g., "0-5,8,10-15"
+        local cnt=0 part
+        IFS=',' read -ra parts <<< "$aff"
+        for part in "${parts[@]}"; do
+          if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}"
+            cnt=$(( cnt + b - a + 1 ))
+          elif [[ "$part" =~ ^[0-9]+$ ]]; then
+            cnt=$(( cnt + 1 ))
+          fi
+        done
+        CPUS="$cnt"
+      fi
+    fi
   fi
-  if [[ -z "$RAW_CPUS" ]]; then
-    RAW_CPUS="$(python3 - <<'PY'
+
+  # 3) Fallback to getconf if still unknown
+  if (( CPUS < 1 )); then
+    if command -v getconf >/dev/null 2>&1; then
+      CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
+    fi
+  fi
+
+  # 4) Final fallback: config.yaml
+  if (( CPUS < 1 )); then
+    CPUS="$(python3 - <<'PY'
 import yaml
 print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["cpus_per_task"])
 PY
 )"
+    CPUS="$(_int_last "$CPUS")"
   fi
-  local CPUS="$(_int_last "$RAW_CPUS")"
+
   (( CPUS < 1 )) && CPUS=1
 
-  # Layout (your preference):
-  #   ntmpi = gpus * 2
-  #   ntomp = floor(cpus / ntmpi), min 1
+  # ---- Layout (your preference) ----
   local NTMPI=$(( GPUS * 2 ))
   (( NTMPI < 1 )) && NTMPI=1
   local NTOMP=$(( CPUS / NTMPI ))
   (( NTOMP < 1 )) && NTOMP=1
 
-  # Expose to log so we can verify
+  # Log & export OpenMP
   echo "[MDLAYOUT] gpus=${GPUS} cpus=${CPUS} -> ntmpi=${NTMPI} ntomp=${NTOMP}" 1>&2
-
   export OMP_NUM_THREADS=$NTOMP
   export OMP_PLACES=cores
   export OMP_PROC_BIND=close
