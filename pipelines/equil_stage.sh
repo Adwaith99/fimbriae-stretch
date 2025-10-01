@@ -33,40 +33,57 @@ pick_prev_conf() {
 }
 
 build_mdrun_flags() {
-  # If user already set GMX_MDRUN_FLAGS, just echo it back
+  # 1) If user already set GMX_MDRUN_FLAGS, just use it
   if [[ -n "${GMX_MDRUN_FLAGS:-}" ]]; then
     echo "${GMX_MDRUN_FLAGS}"
     return
   fi
 
-  # Detect GPUs and CPUs from SLURM (be robust to env var variants)
-  local GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
-  if [[ -z "$GPUS" ]]; then
-    GPUS=$(python3 - <<'PY'
+  # helper: extract last integer from a string; default to 1 on failure
+  _int_last () {
+    local s="$1"
+    local n
+    n="$(echo "$s" | sed -E 's/.*[^0-9]([0-9]+)[^0-9]*$/\1/;t;d')" || true
+    if [[ -z "$n" ]]; then echo 1; else echo "$n"; fi
+  }
+
+  # 2) Detect GPUs from SLURM env (these may be "h100:4", "gpu:h100:4", or just "4")
+  local RAW_GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
+  if [[ -z "$RAW_GPUS" ]]; then
+    # fallback to config; may also be "h100:4"
+    RAW_GPUS="$(python3 - <<'PY'
 import yaml
 print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gpus_per_node"])
 PY
-)
+)"
   fi
-  local CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-}}"
-  if [[ -z "$CPUS" ]]; then
-    CPUS=$(python3 - <<'PY'
+  local GPUS="$(_int_last "$RAW_GPUS")"
+  (( GPUS < 1 )) && GPUS=1
+
+  # 3) Detect CPUs (usually a plain integer, but sanitize anyway)
+  local RAW_CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-}}"
+  if [[ -z "$RAW_CPUS" ]]; then
+    RAW_CPUS="$(python3 - <<'PY'
 import yaml
 print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["cpus_per_task"])
 PY
-)
+)"
   fi
+  local CPUS="$(_int_last "$RAW_CPUS")"
+  (( CPUS < 1 )) && CPUS=1
 
-  # Layout: ntmpi = gpus * 2 ; ntomp = cpus/ntmpi  (min 1)
+  # 4) Layout you requested: ntmpi = (gpus * 2); ntomp = cpus/ntmpi (≥1)
   local NTMPI=$(( GPUS * 2 ))
   (( NTMPI < 1 )) && NTMPI=1
   local NTOMP=$(( CPUS / NTMPI ))
   (( NTOMP < 1 )) && NTOMP=1
+
   export OMP_NUM_THREADS=$NTOMP
   export GMX_ENABLE_DIRECT_GPU_COMM=1
 
   echo "-ntmpi $NTMPI -ntomp $NTOMP -nb gpu -bonded gpu -pme gpu -update gpu -npme 1"
 }
+
 
 # ---------- preparation (only if missing) ----------
 if [[ ! -f clean.pdb ]]; then
