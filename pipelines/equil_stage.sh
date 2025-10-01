@@ -5,15 +5,8 @@
 # BOX_X/Y/Z: box dimensions in nm (passed from submitter)
 set -euo pipefail
 
-SYS=${1:?}
-MODE=${2:?}
-TEMPK=${3:?}
-NSTEPS=${4:?}
-FC=${5:?}
-FINAL=${6:-0}
-BOX_X=${7:-}
-BOX_Y=${8:-}
-BOX_Z=${9:-}
+SYS=${1:?}; MODE=${2:?}; TEMPK=${3:?}; NSTEPS=${4:?}; FC=${5:?}; FINAL=${6:-0}
+BOX_X=${7:-}; BOX_Y=${8:-}; BOX_Z=${9:-}
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 WD="$ROOT/systems/${SYS}/00_build"
@@ -26,123 +19,59 @@ pick_prev_conf() {
     npt_fc1000.gro npt_fc500.gro npt_fc200.gro npt_fc100.gro npt_fc50.gro \
     nvt_fc1000.gro nvt_fc500.gro nvt_fc200.gro nvt_fc100.gro nvt_fc50.gro \
     em_all.gro em_posres.gro em.gro ions.gro solv.gro boxed.gro aligned.pdb clean.pdb
-  do
-    [[ -f "$c" ]] && { echo "$c"; return; }
-  done
+  do [[ -f "$c" ]] && { echo "$c"; return; }; done
   echo "clean.pdb"
 }
 
+# Build GPU flags deterministically; robust GPU/CPU detection
 build_mdrun_flags() {
-  # If user forced flags, use them
-  if [[ -n "${GMX_MDRUN_FLAGS:-}" ]]; then
-    echo "${GMX_MDRUN_FLAGS}"
-    return
-  fi
-
-  # helper: extract last integer from a string like "gpu:h100:4" -> 4
-  _int_last () {
-    local s="$1"
-    local n
-    n="$(echo "$s" | sed -E 's/.*[^0-9]([0-9]+)[^0-9]*$/\1/;t;d')" || true
-    if [[ -z "$n" ]]; then echo 0; else echo "$n"; fi
-  }
-
-  # ---- GPUs ----
+  if [[ -n "${GMX_MDRUN_FLAGS:-}" ]]; then echo "${GMX_MDRUN_FLAGS}"; return; fi
+  _int_last(){ local n; n="$(echo "$1" | sed -E 's/.*[^0-9]([0-9]+)[^0-9]*$/\1/;t;d')"||true; [[ -z "$n" ]]&&echo 0||echo "$n"; }
   local RAW_GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
-  if [[ -z "$RAW_GPUS" ]]; then
-    RAW_GPUS="$(python3 - <<'PY'
-import yaml
-print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gpus_per_node"])
+  [[ -z "$RAW_GPUS" ]] && RAW_GPUS="$(python3 - <<'PY'
+import yaml; print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gpus_per_node"])
 PY
 )"
-  fi
-  local GPUS="$(_int_last "$RAW_GPUS")"
-  (( GPUS < 1 )) && GPUS=1
-
-  # ---- CPUs (robust) ----
-  # 1) Try SLURM_CPUS_PER_TASK if set and >0
+  local GPUS="$(_int_last "$RAW_GPUS")"; (( GPUS<1 )) && GPUS=1
   local CPUS="$(_int_last "${SLURM_CPUS_PER_TASK:-0}")"
-
-  # 2) If that failed, derive from the job cgroup with taskset
-  if (( CPUS < 1 )); then
-    if command -v taskset >/dev/null 2>&1; then
-      # Example: "pid 12345's current affinity list: 0-5,8,10-15"
-      local aff; aff="$(taskset -pc $$ 2>/dev/null | awk -F': ' 'NR==1{print $2}')" || aff=""
-      if [[ -n "$aff" ]]; then
-        # Count CPU IDs in a list with ranges, e.g., "0-5,8,10-15"
-        local cnt=0 part
-        IFS=',' read -ra parts <<< "$aff"
-        for part in "${parts[@]}"; do
-          if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}"
-            cnt=$(( cnt + b - a + 1 ))
-          elif [[ "$part" =~ ^[0-9]+$ ]]; then
-            cnt=$(( cnt + 1 ))
-          fi
-        done
-        CPUS="$cnt"
-      fi
+  if (( CPUS<1 )) && command -v taskset >/dev/null 2>&1; then
+    local aff; aff="$(taskset -pc $$ 2>/dev/null | awk -F': ' 'NR==1{print $2}')"||aff=""
+    if [[ -n "$aff" ]]; then
+      local cnt=0 part; IFS=',' read -ra parts <<< "$aff"
+      for part in "${parts[@]}"; do
+        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then cnt=$((cnt+${BASH_REMATCH[2]}-${BASH_REMATCH[1]}+1))
+        elif [[ "$part" =~ ^[0-9]+$ ]]; then cnt=$((cnt+1)); fi
+      done; CPUS="$cnt"
     fi
   fi
-
-  # 3) Fallback to getconf if still unknown
-  if (( CPUS < 1 )); then
-    if command -v getconf >/dev/null 2>&1; then
-      CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
-    fi
-  fi
-
-  # 4) Final fallback: config.yaml
-  if (( CPUS < 1 )); then
+  if (( CPUS<1 )) && command -v getconf >/dev/null 2>&1; then CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"; fi
+  if (( CPUS<1 )); then
     CPUS="$(python3 - <<'PY'
-import yaml
-print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["cpus_per_task"])
+import yaml; print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["cpus_per_task"])
 PY
-)"
-    CPUS="$(_int_last "$CPUS")"
+)"; CPUS="$(_int_last "$CPUS")"
   fi
-
-  (( CPUS < 1 )) && CPUS=1
-
-  # ---- Layout (your preference) ----
-  local NTMPI=$(( GPUS * 2 ))
-  (( NTMPI < 1 )) && NTMPI=1
-  local NTOMP=$(( CPUS / NTMPI ))
-  (( NTOMP < 1 )) && NTOMP=1
-
-  # Log & export OpenMP
+  (( CPUS<1 )) && CPUS=1
+  local NTMPI=$(( GPUS * 2 )); (( NTMPI<1 )) && NTMPI=1
+  local NTOMP=$(( CPUS / NTMPI )); (( NTOMP<1 )) && NTOMP=1
   echo "[MDLAYOUT] gpus=${GPUS} cpus=${CPUS} -> ntmpi=${NTMPI} ntomp=${NTOMP}" 1>&2
-  export OMP_NUM_THREADS=$NTOMP
-  export OMP_PLACES=cores
-  export OMP_PROC_BIND=close
-  export GMX_ENABLE_DIRECT_GPU_COMM=1
-
+  export OMP_NUM_THREADS=$NTOMP OMP_PLACES=cores OMP_PROC_BIND=close GMX_ENABLE_DIRECT_GPU_COMM=1
   echo "-ntmpi $NTMPI -ntomp $NTOMP -nb gpu -bonded gpu -pme gpu -update gpu -npme 1"
 }
 
-
-
 # ---------- preparation (only if missing) ----------
 if [[ ! -f clean.pdb ]]; then
-  FF="charmm36-jul2022"
-  [[ -d ${FF}.ff ]] || ln -s "../../../${FF}.ff" .
+  FF="charmm36-jul2022"; [[ -d ${FF}.ff ]] || ln -s "../../../${FF}.ff" .
   [[ -f input.pdb ]] || { echo "ERROR: input.pdb missing in $WD" >&2; exit 2; }
-
   gmx pdb2gmx -f input.pdb -o clean.pdb -p topol.top -ff ${FF} -water tip3p
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
-
   if [[ -z "$BOX_X" || -z "$BOX_Y" || -z "$BOX_Z" ]]; then
     read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - <<PY
-import yaml
-c=yaml.safe_load(open("$ROOT/config.yaml"))
-s=next(x for x in c["systems"] if x["name"]=="$SYS")
-print(*s["box"])
+import yaml; s=[x for x in yaml.safe_load(open("$ROOT/config.yaml"))["systems"] if x["name"]=="$SYS"][0]; print(*s["box"])
 PY
-)"
-  fi
+)"; fi
   gmx editconf -f aligned.pdb -o boxed.gro -c -box ${BOX_X} ${BOX_Y} ${BOX_Z} -bt triclinic
   gmx solvate -cp boxed.gro -cs spc216.gro -o solv.gro -p topol.top
-
   cat > ions.mdp <<'EOF'
 integrator=steep
 nsteps=2000
@@ -153,8 +82,6 @@ rvdw=1.2
 EOF
   gmx grompp -f ions.mdp -c solv.gro -p topol.top -o ions.tpr
   printf "13\n" | gmx genion -s ions.tpr -o ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
-
-  # Ensure per-chain posre files use POSRE_FC macro (run once)
   python3 "$ROOT/scripts/patch_posre_macros.py"
 fi
 
@@ -164,18 +91,14 @@ prev_conf="$(pick_prev_conf)"
 DT_PS=0.001
 if [[ "$FINAL" == "1" && "$MODE" == "npt" && "$FC" == "0" ]]; then
   DT_PS=$(python3 - <<'PY'
-import yaml
-print(yaml.safe_load(open("config.yaml"))["globals"]["dt_ps"])
+import yaml; print(yaml.safe_load(open("config.yaml"))["globals"]["dt_ps"])
 PY
-)
-fi
+); fi
 
 # ---------- write stage MDP ----------
 gen_mdp () {
-  local mode=$1; local temp=$2; local nsteps=$3; local finalflag=$4
-
+  local mode=$1 temp=$2 nsteps=$3 finalflag=$4
   if [[ "$mode" == "em" ]]; then
-    # EM: compile & run with defaults; include constraints=none (your preference)
     cat > stage.mdp <<'EOF'
 integrator=steep
 nsteps=50000
@@ -194,18 +117,10 @@ EOF
     return
   fi
 
-  # MDP defines for restrained vs unrestrained
-  local DEF=""
-  if [[ "$FC" != "0" ]]; then
-    DEF="-DPOSRES -DPOSRE_FC=${FC}"
-  fi
+  local DEF=""; [[ "$FC" != "0" ]] && DEF="-DPOSRES -DPOSRE_FC=${FC}"
 
   # Defaults for intermediate stages
-  local nstcalc=200
-  local nstxoutc=50000
-  local nstenergy=10000
-  local nstlog=10000
-
+  local nstcalc=200 nstxoutc=50000 nstenergy=10000 nstlog=10000
   # Final equilibrium NPT: compute strides with actual dt
   if [[ "$finalflag" == "1" && "$mode" == "npt" && "$FC" == "0" ]]; then
     export DT_PS
@@ -242,7 +157,7 @@ PY
     echo "nstenergy           = ${nstenergy}"
     echo "nstlog              = ${nstlog}"
     echo "nstcalcenergy       = ${nstcalc}"
-    echo "nstcomm             = ${nstcalc}"   # fix NOTE 1
+    echo "nstcomm             = ${nstcalc}"
     echo "xtc-precision       = 1000"
   } > stage.mdp
 
@@ -261,6 +176,7 @@ PY
       echo "tau_p=2.0"
       echo "ref_p=1.0"
       echo "compressibility=4.5e-5"
+      [[ "$FC" != "0" ]] && echo "refcoord_scaling = com"
     } >> stage.mdp
   fi
 }
@@ -270,22 +186,20 @@ gen_mdp "$MODE" "$TEMPK" "$NSTEPS" "$FINAL"
 
 OUT="${MODE}$([[ "$FC" != "0" ]] && echo "_fc${FC}" || echo "")"
 
-# ---------- grompp (always) ----------
+# grompp
 gmx grompp -f stage.mdp -c "$prev_conf" -r "$prev_conf" -p "$TOP_USE" -o "${OUT}.tpr"
 
-# ---------- mdrun ----------
+# mdrun
 if [[ "$MODE" == "em" ]]; then
-  # EM: run with defaults (no GPU/tMPI/OpenMP overrides), but keep -v for progress
   echo "[INFO] EM: launching 'gmx mdrun -v -deffnm ${OUT}'"
   gmx mdrun -v -deffnm "${OUT}"
 else
-  # NVT/NPT: use GPU+tMPI/OpenMP flags (or user's GMX_MDRUN_FLAGS if provided)
   FLAGS="$(build_mdrun_flags)"
   echo "[INFO] ${MODE}: launching 'gmx mdrun -v -deffnm ${OUT} ${FLAGS}'"
   gmx mdrun -v -deffnm "${OUT}" ${FLAGS}
 fi
 
-# ---------- finalize ----------
+# finalize
 if [[ "$MODE" == "npt" && "$FC" == "0" && "$FINAL" == "1" ]]; then
   cp -f "${OUT}.gro" npt_final.gro
   cp -f "${OUT}.tpr" npt_final.tpr
