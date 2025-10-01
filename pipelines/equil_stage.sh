@@ -33,13 +33,13 @@ pick_prev_conf() {
 }
 
 build_mdrun_flags() {
-  # 1) If user already set GMX_MDRUN_FLAGS, just use it
+  # If user forced flags, use them
   if [[ -n "${GMX_MDRUN_FLAGS:-}" ]]; then
     echo "${GMX_MDRUN_FLAGS}"
     return
   fi
 
-  # helper: extract last integer from a string; default to 1 on failure
+  # helper: extract last integer from a string like "h100:4" -> 4
   _int_last () {
     local s="$1"
     local n
@@ -47,10 +47,9 @@ build_mdrun_flags() {
     if [[ -z "$n" ]]; then echo 1; else echo "$n"; fi
   }
 
-  # 2) Detect GPUs from SLURM env (these may be "h100:4", "gpu:h100:4", or just "4")
+  # GPUs: SLURM may give "gpu:h100:4" or "h100:4" or just "4"
   local RAW_GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
   if [[ -z "$RAW_GPUS" ]]; then
-    # fallback to config; may also be "h100:4"
     RAW_GPUS="$(python3 - <<'PY'
 import yaml
 print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gpus_per_node"])
@@ -60,8 +59,12 @@ PY
   local GPUS="$(_int_last "$RAW_GPUS")"
   (( GPUS < 1 )) && GPUS=1
 
-  # 3) Detect CPUs (usually a plain integer, but sanitize anyway)
-  local RAW_CPUS="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-}}"
+  # CPUs:
+  # Prefer per-task; fall back to per-gpu × gpus; else config.
+  local RAW_CPUS="${SLURM_CPUS_PER_TASK:-}"
+  if [[ -z "$RAW_CPUS" && -n "${SLURM_CPUS_PER_GPU:-}" ]]; then
+    RAW_CPUS=$(( $(_int_last "${SLURM_CPUS_PER_GPU}") * GPUS ))
+  fi
   if [[ -z "$RAW_CPUS" ]]; then
     RAW_CPUS="$(python3 - <<'PY'
 import yaml
@@ -72,17 +75,25 @@ PY
   local CPUS="$(_int_last "$RAW_CPUS")"
   (( CPUS < 1 )) && CPUS=1
 
-  # 4) Layout you requested: ntmpi = (gpus * 2); ntomp = cpus/ntmpi (≥1)
+  # Layout (your preference):
+  #   ntmpi = gpus * 2
+  #   ntomp = floor(cpus / ntmpi), min 1
   local NTMPI=$(( GPUS * 2 ))
   (( NTMPI < 1 )) && NTMPI=1
   local NTOMP=$(( CPUS / NTMPI ))
   (( NTOMP < 1 )) && NTOMP=1
 
+  # Expose to log so we can verify
+  echo "[MDLAYOUT] gpus=${GPUS} cpus=${CPUS} -> ntmpi=${NTMPI} ntomp=${NTOMP}" 1>&2
+
   export OMP_NUM_THREADS=$NTOMP
+  export OMP_PLACES=cores
+  export OMP_PROC_BIND=close
   export GMX_ENABLE_DIRECT_GPU_COMM=1
 
   echo "-ntmpi $NTMPI -ntomp $NTOMP -nb gpu -bonded gpu -pme gpu -update gpu -npme 1"
 }
+
 
 
 # ---------- preparation (only if missing) ----------
