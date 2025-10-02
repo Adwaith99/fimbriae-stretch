@@ -177,7 +177,7 @@ PY
       echo "tau_p=2.0"
       echo "ref_p=1.0"
       echo "compressibility=4.5e-5"
-      [[ "$FC" != "0" ]] && echo "refcoord_scaling = com"
+      if [[ "$FC" != "0" ]]; then echo "refcoord_scaling = com"; fi
     } >> stage.mdp
   fi
 }
