@@ -1,34 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.."; pwd)"
-python3 "$ROOT/scripts/generate_manifest.py" >/dev/null
 
-PARTITION=$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
-print(c["globals"]["slurm"]["partition"])
-PY
-)
-GMXMOD=$(python3 - <<PY
-import yaml; c=yaml.safe_load(open("$ROOT/config.yaml"))
+ROOT="$(cd "$(dirname "$0")/.."; pwd)"
+cd "$ROOT"
+
+# Get GROMACS module from config
+GMX_MOD="$(python3 - <<'PY'
+import yaml
+c=yaml.safe_load(open("config.yaml"))
 print(c["globals"]["slurm"]["gromacs_module"])
 PY
-)
+)"
 
-while IFS=, read -r system pdb box build_status; do
-  [[ "$system" == "system" ]] && continue
-  if [[ "$build_status" != "DONE" ]]; then
-    echo "Submitting staged build for $system..."
-    read -r BX BY BZ <<<"$box"
+# Prefer manifests/systems.csv if present; otherwise read config.yaml
+SYS_LIST=()
+if [[ -f manifests/systems.csv ]]; then
+  # Expected columns: name,pdb,box_x,box_y,box_z
+  tail -n +2 manifests/systems.csv | while IFS=, read -r name pdb bx by bz; do
+    [[ -z "$name" ]] && continue
+    SYS_LIST+=("$name|$pdb|$bx|$by|$bz")
+  done
+else
+  # Fallback: pull from config.yaml
+  python3 - <<'PY'
+import yaml
+c=yaml.safe_load(open("config.yaml"))
+for s in c["systems"]:
+    name=s["name"]; pdb=s["pdb"]; bx,by,bz=s["box"]
+    print(f"{name}|{pdb}|{bx}|{by}|{bz}")
+PY
+fi | while IFS= read -r line; do
+  SYS_LIST+=("$line")
+done
 
-    # If pdb is relative, resolve relative to project root
-    if [[ "$pdb" = /* ]]; then
-      PDB_PATH="$pdb"
-    else
-      PDB_PATH="$ROOT/$pdb"
-    fi
+if [[ ${#SYS_LIST[@]} -eq 0 ]]; then
+  echo "No systems found to submit."
+  exit 0
+fi
 
-    bash "$ROOT/pipelines/fimA_build_submit_staged.sh" "${system}" "$PDB_PATH" ${BX:-100} ${BY:-20} ${BZ:-20} "${GMXMOD}"
-  else
-    echo "Build already DONE for $system"
-  fi
-done < <(tail -n +2 "$ROOT/manifests/systems.csv")
+for rec in "${SYS_LIST[@]}"; do
+  IFS='|' read -r SYS PDB BX BY BZ <<< "$rec"
+  echo "Submitting staged build for ${SYS}..."
+  # Call the *submitter* (it does all sbatch calls internally)
+  bash "$ROOT/pipelines/fimA_build_submit_staged.sh" "$SYS" "$PDB" "$BX" "$BY" "$BZ" "$GMX_MOD" ${BUILD_FORCE:+--force}
+done
