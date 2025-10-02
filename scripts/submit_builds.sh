@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 cd "$ROOT"
 
-# Get GROMACS module from config
+# Read GROMACS module from config
 GMX_MOD="$(python3 - <<'PY'
 import yaml
 c=yaml.safe_load(open("config.yaml"))
@@ -15,14 +15,15 @@ PY
 declare -a SYS_LIST=()
 
 if [[ -f manifests/systems.csv ]]; then
-  # Read WITHOUT a pipeline to avoid subshell array loss
-  while IFS=, read -r name pdb bx by bz; do
-    [[ "$name" == "name" ]] && continue         # skip header
-    [[ -z "${name:-}" ]] && continue
-    SYS_LIST+=("$name|$pdb|$bx|$by|$bz")
-  done < manifests/systems.csv
+  # Skip header line robustly (use tail -n +2)
+  while IFS=, read -r sys pdb bx by bz; do
+    # defensive: skip empty or header-looking rows
+    [[ -z "${sys:-}" ]] && continue
+    [[ "${sys,,}" == "system" || "${sys,,}" == "name" ]] && continue
+    SYS_LIST+=("$sys|$pdb|$bx|$by|$bz")
+  done < <(tail -n +2 manifests/systems.csv)
 else
-  # Fallback: read straight from config.yaml
+  # Fallback: read from config.yaml
   while IFS= read -r line; do
     SYS_LIST+=("$line")
   done < <(python3 - <<'PY'
@@ -43,6 +44,5 @@ fi
 for rec in "${SYS_LIST[@]}"; do
   IFS='|' read -r SYS PDB BX BY BZ <<< "$rec"
   echo "Submitting staged build for ${SYS}..."
-  # Call the staged submitter (it does all sbatch calls internally + resume/skip)
   bash "$ROOT/pipelines/fimA_build_submit_staged.sh" "$SYS" "$PDB" "$BX" "$BY" "$BZ" "$GMX_MOD" ${BUILD_FORCE:+--force}
 done
