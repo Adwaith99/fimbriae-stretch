@@ -75,19 +75,42 @@ submit_stage () {
   JID="$(
     "${cmd[@]}" <<EOT
 #!/bin/bash
-set -euo pipefail
-# Some sites keep sticky base modules and return non-zero on purge; don’t die on that.
+#!/bin/bash
+# TRACE EVERYTHING
+set -Eeuo pipefail
+trap 'echo "[TRACE] failed at line $LINENO with exit $?"' ERR
+
+# Be tolerant of sticky base modules
 module --force purge || true
 module load ${GMX_MOD}
 
-# Minimal sanity prints
-echo "[ENV] which gmx: $(which gmx || echo 'not found')"
+echo "[ENV] module list:"
+module -t list || true
+
+# Prefer 'type' over 'which' (modules can alias functions)
+echo "[ENV] gmx resolution:"
+type -a gmx || echo "gmx not found in type -a"
+
+# Fallbacks if needed
+if ! command -v gmx >/dev/null 2>&1; then
+  echo "[WARN] 'gmx' not on PATH after '${GMX_MOD}'. Trying: module load gromacs/2024.4" >&2
+  module load gromacs/2024.4 || true
+fi
+if ! command -v gmx >/dev/null 2>&1 && command -v gmx_mpi >/dev/null 2>&1; then
+  echo "[WARN] Using gmx_mpi fallback via shell function." >&2
+  gmx() { command gmx_mpi "$@"; }
+  export -f gmx
+fi
+
+echo "[ENV] final which gmx: $(command -v gmx || echo 'not found')"
 echo "[ENV] gmx version:"; (gmx --version || true)
 
-# run
+# Run stage with full bash trace
 export PIPE_ROOT="$ROOT"
 cd "$ROOT"
-bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG" "${BOX_X}" "${BOX_Y}" "${BOX_Z}"
+echo "[RUN] calling equil_stage.sh for ${SYS} ${MODE} T=${TEMP} NSTEPS=${NSTEPS} FC=${FC} FINAL=${FINALFLAG}"
+bash -x "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG" "${BOX_X}" "${BOX_Y}" "${BOX_Z}"
+echo "[DONE] equil_stage.sh finished OK"
 EOT
   )"
 
