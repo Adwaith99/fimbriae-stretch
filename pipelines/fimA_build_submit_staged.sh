@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Submit staged build: EM → (NVT,NPT)x5 with per-FC temperature → Final NPT
-# USAGE: fimA_build_submit_staged.sh <SYSTEM> <PDB> <BOX_X> <BOX_Y> <BOX_Z> <GMX_MODULE>
+# Submit staged build: EM → (NVT,NPT)x5 (paired temps per FC) → Final NPT
+# USAGE: fimA_build_submit_staged.sh <SYSTEM> <PDB> <BOX_X> <BOX_Y> <BOX_Z> <GMX_MODULE> [--force]
+# Env override: BUILD_FORCE=1  (re-run even if outputs exist)
+
 set -euo pipefail
-SYS=${1:?} ; PDB_IN=${2:?} ; BOX_X=${3:?} ; BOX_Y=${4:?} ; BOX_Z=${5:?} ; GMX_MOD=${6:?}
+SYS=${1:?}
+PDB_IN=${2:?}
+BOX_X=${3:?}
+BOX_Y=${4:?}
+BOX_Z=${5:?}
+GMX_MOD=${6:?}
+BUILD_FORCE=${BUILD_FORCE:-0}
+if [[ "${7:-}" == "--force" ]]; then BUILD_FORCE=1; fi
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 WD="$ROOT/systems/${SYS}/00_build"
@@ -22,11 +31,11 @@ PY
 # Restraint schedule (high → low)
 FC_LIST=(1000 500 200 100 50)
 
-# Stage step counts (equilibration at 1 fs for restrained stages)
-NVT_STEPS=200000   # 200 ps @ 0.001 ps
-NPT_STEPS=500000   # 500 ps @ 0.001 ps
+# Step counts (restrained stages @ 1 fs)
+NVT_STEPS=200000   # 200 ps
+NPT_STEPS=500000   # 500 ps
 
-# Final NPT steps @ globals.dt_ps (e.g., 0.002 ps)
+# Final NPT steps @ globals.dt_ps
 FINAL_NPT_STEPS=$(python3 - <<'PY'
 import yaml
 c=yaml.safe_load(open("config.yaml"))
@@ -36,7 +45,7 @@ print(int(round(length_ns*1_000_000/dt)))
 PY
 )
 
-# Temperature schedule for BOTH NVT and NPT per FC (defaults match your original)
+# Temperature schedule for BOTH NVT and NPT per FC (defaults = your original)
 temp_for_fc() {
 python3 - "$1" <<'PY'
 import sys, yaml
@@ -48,11 +57,24 @@ print(tmap.get(str(fc), default.get(str(fc), 303.15)))
 PY
 }
 
-# Ensure input present once
-[[ -f "$WD/input.pdb" ]] || cp -f "$PDB_IN" "$WD/input.pdb"
+# Helper: check if a stage's expected output exists
+is_done() {
+  # $1 = filename to check (relative to $WD)
+  [[ -f "$WD/$1" ]]
+}
 
+# Helper: submit a stage unless already done; handle dependencies
 submit_stage () {
-  local NAME=$1 MODE=$2 TEMP=$3 NSTEPS=$4 FC=$5 FINALFLAG=$6 TIME=$7 DEP=$8
+  local NAME=$1 MODE=$2 TEMP=$3 NSTEPS=$4 FC=$5 FINALFLAG=$6 TIME=$7 DEP=$8 OUTFILE=$9
+
+  if [[ "$BUILD_FORCE" == "0" ]] && is_done "$OUTFILE"; then
+    echo "SKIP  ${NAME}_${SYS} (found $OUTFILE)"
+    # If we skip, clear dependency so the next stage doesn't wait on us
+    echo ""
+    return
+  fi
+
+  echo "SUBMIT ${NAME}_${SYS} (temp=${TEMP}K, fc=${FC}, steps=${NSTEPS}, final=${FINALFLAG})"
   sbatch ${DEP:+--dependency=afterok:$DEP} <<EOT | awk '{print $4}'
 #!/bin/bash
 #SBATCH --job-name=${NAME}_${SYS}
@@ -63,25 +85,39 @@ submit_stage () {
 #SBATCH --output=$LOG/${NAME}_${SYS}.out
 module purge
 module load ${GMX_MOD}
+# Pass a stable root to the stage script for config.yaml resolution
+export PIPE_ROOT="$ROOT"
 bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG" "${BOX_X}" "${BOX_Y}" "${BOX_Z}"
 EOT
 }
 
-# EM (single stage)
-EM_ID=$(submit_stage "em" "em" 0 50000 0 0 "${TIME_EM}" "")
-echo "EM: $EM_ID"
-DEP="$EM_ID"
+# Ensure input present once
+[[ -f "$WD/input.pdb" ]] || cp -f "$PDB_IN" "$WD/input.pdb"
 
-# NVT/NPT ×5: same TEMP for each pair; temp↑ as FC↓
+# ==== Chain submission with resume ====
+DEP=""
+
+# 0) EM
+EM_JOBID=$(submit_stage "em" "em" 0 50000 0 0 "${TIME_EM}" "$DEP" "em.gro")
+if [[ -n "${EM_JOBID}" ]]; then DEP="$EM_JOBID"; fi
+
+# 1..5) Paired NVT/NPT at same T for each FC
 for FC in "${FC_LIST[@]}"; do
   T=$(temp_for_fc "$FC")
-  NVT_ID=$(submit_stage "nvt_fc${FC}" "nvt" "${T}" ${NVT_STEPS} ${FC} 0 "${TIME_NVT}" "$DEP")
-  echo "NVT fc=${FC} @ ${T} K: $NVT_ID"; DEP="$NVT_ID"
-  NPT_ID=$(submit_stage "npt_fc${FC}" "npt" "${T}" ${NPT_STEPS} ${FC} 0 "${TIME_NPT}" "$DEP")
-  echo "NPT fc=${FC} @ ${T} K: $NPT_ID"; DEP="$NPT_ID"
+
+  # NVT (output: nvt_fcXX.gro)
+  NVT_JOBID=$(submit_stage "nvt_fc${FC}" "nvt" "${T}" ${NVT_STEPS} ${FC} 0 "${TIME_NVT}" "$DEP" "nvt_fc${FC}.gro")
+  if [[ -n "${NVT_JOBID}" ]]; then DEP="$NVT_JOBID"; fi
+
+  # NPT (output: npt_fcXX.gro)
+  NPT_JOBID=$(submit_stage "npt_fc${FC}" "npt" "${T}" ${NPT_STEPS} ${FC} 0 "${TIME_NPT}" "$DEP" "npt_fc${FC}.gro")
+  if [[ -n "${NPT_JOBID}" ]]; then DEP="$NPT_JOBID"; fi
 done
 
-# Final unrestrained NPT (production-like) @ 303.15 K
-FINAL_ID=$(submit_stage "npt_final" "npt" 303.15 ${FINAL_NPT_STEPS} 0 1 "${TIME_NPT_FINAL}" "$DEP")
-echo "Final NPT: $FINAL_ID"
-echo "Chain submitted. Final job id: $FINAL_ID"
+# Final unrestrained NPT (output: npt_final.gro)
+FINAL_JOBID=$(submit_stage "npt_final" "npt" 303.15 ${FINAL_NPT_STEPS} 0 1 "${TIME_NPT_FINAL}" "$DEP" "npt_final.gro")
+if [[ -n "${FINAL_JOBID}" ]]; then
+  echo "Final NPT: $FINAL_JOBID"
+else
+  echo "Final NPT: SKIPPED (npt_final.gro present)"
+fi

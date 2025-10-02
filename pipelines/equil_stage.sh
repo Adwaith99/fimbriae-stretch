@@ -9,6 +9,7 @@ SYS=${1:?}; MODE=${2:?}; TEMPK=${3:?}; NSTEPS=${4:?}; FC=${5:?}; FINAL=${6:-0}
 BOX_X=${7:-}; BOX_Y=${8:-}; BOX_Z=${9:-}
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
+export PIPE_ROOT="$ROOT"
 WD="$ROOT/systems/${SYS}/00_build"
 cd "$WD"
 
@@ -29,7 +30,7 @@ build_mdrun_flags() {
   _int_last(){ local n; n="$(echo "$1" | sed -E 's/.*[^0-9]([0-9]+)[^0-9]*$/\1/;t;d')"||true; [[ -z "$n" ]]&&echo 0||echo "$n"; }
   local RAW_GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
   [[ -z "$RAW_GPUS" ]] && RAW_GPUS="$(python3 - <<'PY'
-import yaml; print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gpus_per_node"])
+import yaml, os; print(yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["slurm"]["gpus_per_node"])
 PY
 )"
   local GPUS="$(_int_last "$RAW_GPUS")"; (( GPUS<1 )) && GPUS=1
@@ -47,7 +48,7 @@ PY
   if (( CPUS<1 )) && command -v getconf >/dev/null 2>&1; then CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"; fi
   if (( CPUS<1 )); then
     CPUS="$(python3 - <<'PY'
-import yaml; print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["cpus_per_task"])
+import yaml, os; print(yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["slurm"]["cpus_per_task"])
 PY
 )"; CPUS="$(_int_last "$CPUS")"
   fi
@@ -67,7 +68,7 @@ if [[ ! -f clean.pdb ]]; then
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
   if [[ -z "$BOX_X" || -z "$BOX_Y" || -z "$BOX_Z" ]]; then
     read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - <<PY
-import yaml; s=[x for x in yaml.safe_load(open("$ROOT/config.yaml"))["systems"] if x["name"]=="$SYS"][0]; print(*s["box"])
+import yaml, os; s=[x for x in yaml.safe_load(open("$ROOT/config.yaml"))["systems"] if x["name"]=="$SYS"][0]; print(*s["box"])
 PY
 )"; fi
   gmx editconf -f aligned.pdb -o boxed.gro -c -box ${BOX_X} ${BOX_Y} ${BOX_Z} -bt triclinic
@@ -91,7 +92,7 @@ prev_conf="$(pick_prev_conf)"
 DT_PS=0.001
 if [[ "$FINAL" == "1" && "$MODE" == "npt" && "$FC" == "0" ]]; then
   DT_PS=$(python3 - <<'PY'
-import yaml; print(yaml.safe_load(open("config.yaml"))["globals"]["dt_ps"])
+import yaml, os; print(yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["dt_ps"])
 PY
 ); fi
 
@@ -126,7 +127,7 @@ EOF
     export DT_PS
     read -r nstxoutc nstcalc nstenergy nstlog <<< "$(python3 - <<'PY'
 import os,yaml
-g=yaml.safe_load(open("config.yaml"))["globals"]["equilibrium_md"]
+g=yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["equilibrium_md"]
 dt=float(os.environ.get("DT_PS","0.001"))
 def steps(ps): return int(round(ps/dt))
 print(steps(g["xtc_write_ps"]), 100, steps(100.0), steps(100.0))
