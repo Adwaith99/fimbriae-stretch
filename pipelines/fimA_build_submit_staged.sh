@@ -76,9 +76,17 @@ submit_stage () {
     "${cmd[@]}" <<EOT
 #!/bin/bash
 set -euo pipefail
-module purge
+# Some sites keep sticky base modules and return non-zero on purge; don’t die on that.
+module --force purge || true
 module load ${GMX_MOD}
+
+# Minimal sanity prints
+echo "[ENV] which gmx: $(which gmx || echo 'not found')"
+echo "[ENV] gmx version:"; (gmx --version || true)
+
+# run
 export PIPE_ROOT="$ROOT"
+cd "$ROOT"
 bash "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG" "${BOX_X}" "${BOX_Y}" "${BOX_Z}"
 EOT
   )"
