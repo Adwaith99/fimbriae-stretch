@@ -73,3 +73,7 @@ reset-all:
 		fi; \
 	done
 	@rm -rf indices/*
+
+.PHONY: analyze-eq
+analyze-eq:
+	bash pipelines/analyze_eq.sh $(SYS)
