@@ -38,6 +38,7 @@ bash "$ROOT/scripts/extract_eq.sh" "$WD" "$WD/xvg" | tee "$LOG/extract_${SYS}.lo
 
 echo "[EQ] plotting grid with your script"
 cd "$WD"
+source ~/plot/bin/activate
 python3 "$ROOT/scripts/plot_eq_grid.py" | tee "$LOG/eq_plot_${SYS}.log"
 
 echo "[EQ] done → ${WD}/eq_grid.png , ${WD}/eq_grid.pdf"
