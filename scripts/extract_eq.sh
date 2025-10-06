@@ -32,8 +32,9 @@ warn(){ printf "⚠ %s\n" "$*\n" >&2; }
 is_nonempty(){ [[ -s "$1" ]]; }
 
 # Try by NAME first (with aliases). Falls back to index if needed.
+# replace the function in your current extract_eq.sh
 energy_by_name_or_index() {
-  local edr="$1" out="$2" want="$3"  # want ∈ temperature|pressure|density|potential
+  local edr="$1" out="$2" want="$3"  # want: temperature|pressure|density|potential
   local -a names=()
   case "$want" in
     temperature) names=("Temperature" "Temp." "Temp");;
@@ -43,25 +44,30 @@ energy_by_name_or_index() {
     *)           names=("$want");;
   esac
 
-  # 1) Try name-based selection
+  # ensure we don't get an interactive overwrite prompt
+  rm -f -- "$out"
+
+  # 1) Try by NAME
   for label in "${names[@]}"; do
     if printf "%s\n0\n" "$label" | gmx energy -f "$edr" -o "$out" >/dev/null 2>&1; then
-      ok "$(basename "$out") (by name: $label)"
+      echo "✓ $(basename "$out") (by name: $label)"
       return 0
     fi
   done
 
-  # 2) Fallback to index detection (hybrid script), then use that 1-based index
+  # 2) Fallback to index (your detect_energy_index.py)
   if idx="$("$det_idx_py" "$edr" "$want" 2>/dev/null)"; then
+    rm -f -- "$out"
     if printf "%s\n0\n" "$idx" | gmx energy -f "$edr" -o "$out" >/dev/null 2>&1; then
-      ok "$(basename "$out") (by index: $idx)"
+      echo "✓ $(basename "$out") (by index: $idx)"
       return 0
     fi
   fi
 
-  warn "Failed to extract '$want' from $(basename "$edr")"
+  echo "⚠ Failed to extract '$want' from $(basename "$edr")" >&2
   return 1
 }
+
 
 shopt -s nullglob
 cd "$EDIR"
