@@ -34,7 +34,7 @@ echo "[ENV] gmx version:"
 (gmx --version || true)
 
 echo "[EQ] extracting energies for ${SYS} → ${WD}/xvg/"
-bash "$ROOT/scripts/extract_eq.sh" "$WD" "$WD/xvg" | tee "$LOG/extract_${SYS}.log"
+bash "$ROOT/scripts/extract_eq.sh" "$WD" "$WD/xvg" | tee "$LOG/extract_${SYS}.log" || true
 
 echo "[EQ] plotting grid with your script"
 cd "$WD"
