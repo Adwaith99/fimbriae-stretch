@@ -61,12 +61,15 @@ done
 
 for sys in "${!SYS_ROWS[@]}"; do
   rows=${SYS_ROWS[$sys]}
+  echo "DEBUG: System=$sys, row count=$(echo "$rows" | grep -c .)"
   [[ -z "$rows" ]] && continue
   RUNSTAMP=$(date +'%Y%m%d-%H%M%S')
   RUNMAN="$TMPDIR/manifest.${sys}.pending.$RUNSTAMP.csv"
   { echo "$HEADER"; printf '%s' "$rows"; } > "$RUNMAN"
   n_rows=$(awk 'NR>1 && NF>0{c++} END{print c+0}' "$RUNMAN")
+  echo "DEBUG: Manifest for $sys has $n_rows rows after writing."
   if (( n_rows == 0 )); then
+    echo "DEBUG: Skipping $sys, no rows to submit."
     continue
   fi
 
