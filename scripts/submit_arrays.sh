@@ -43,7 +43,8 @@ TMPDIR="$ROOT/manifests/_pending_split"; mkdir -p "$TMPDIR"
 HEADER=$(head -n1 "$MAN")
 declare -A SYS_ROWS
 for line in "${PENDING[@]}"; do
-  sys=$(echo "$line" | awk -F, '{print $2}')
+  sys=$(echo "$line" | awk -F, '{print $2}' | tr -d '[:space:]')
+  [[ -z "$sys" ]] && continue
   SYS_ROWS["$sys"]+="$line"$'\n'
 done
 
