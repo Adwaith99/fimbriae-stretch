@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Extract XVGs for all NVT/NPT EDRs into xvg/, naming to match your plot script:
-#   nvt_<TEMP>K_<FC>_T.xvg
-#   npt_<TEMP>K_<FC>_P.xvg
-#   npt_<TEMP>K_<FC>_rho.xvg
-#   em_potential.xvg (optional)
 set -euo pipefail
 [[ "${DEBUG:-0}" == "1" ]] && set -x
 
@@ -12,18 +7,16 @@ EDIR="${1:-.}"
 OUTDIR="${2:-xvg}"
 mkdir -p "$OUTDIR"
 
-det_idx_py="$ROOT/scripts/detect_energy_index.py"  # kept as fallback
-
-# FC -> integer temperature label (K) from config.yaml
+# Map FC -> temperature label (K) from config.yaml (fallbacks preserved)
 temp_for_fc() {
   local fc="$1"
   python3 - <<'PY' "$fc" 2>/dev/null
 import sys, yaml
-fc = sys.argv[1]
-cfg = yaml.safe_load(open("config.yaml"))
-default = {"1000":100.0,"500":200.0,"200":303.15,"100":303.15,"50":303.15}
-tmap = cfg.get("globals",{}).get("build",{}).get("temp_schedule_by_fc", default)
-print(int(round(float(tmap.get(str(fc), default.get(str(fc), 303.15))))))
+fc=sys.argv[1]
+cfg=yaml.safe_load(open("config.yaml"))
+default={"1000":100.0,"500":200.0,"200":303.15,"100":303.15,"50":303.15}
+tmap=cfg.get("globals",{}).get("build",{}).get("temp_schedule_by_fc",default)
+print(int(round(float(tmap.get(str(fc), default.get(str(fc),303.15))))))
 PY
 }
 
@@ -31,82 +24,61 @@ ok(){ printf "✓ %s\n" "$*"; }
 warn(){ printf "⚠ %s\n" "$*\n" >&2; }
 is_nonempty(){ [[ -s "$1" ]]; }
 
-# Try by NAME first (with aliases). Falls back to index if needed.
-# replace the function in your current extract_eq.sh
-energy_by_name_or_index() {
-  local edr="$1" out="$2" want="$3"  # want: temperature|pressure|density|potential
-  local -a names=()
-  case "$want" in
-    temperature) names=("Temperature" "Temp." "Temp");;
-    pressure)    names=("Pressure" "Pres." "Press");;
-    density)     names=("Density" "Mass density" "Rho" "ρ");;
-    potential)   names=("Potential" "Potential Energy");;
-    *)           names=("$want");;
-  esac
-
-  # ensure we don't get an interactive overwrite prompt
-  rm -f -- "$out"
-
-  # 1) Try by NAME
-  for label in "${names[@]}"; do
-    if printf "%s\n0\n" "$label" | gmx energy -f "$edr" -o "$out" >/dev/null 2>&1; then
-      echo "✓ $(basename "$out") (by name: $label)"
-      return 0
-    fi
-  done
-
-  # 2) Fallback to index (your detect_energy_index.py)
-  if idx="$("$det_idx_py" "$edr" "$want" 2>/dev/null)"; then
-    rm -f -- "$out"
-    if printf "%s\n0\n" "$idx" | gmx energy -f "$edr" -o "$out" >/dev/null 2>&1; then
-      echo "✓ $(basename "$out") (by index: $idx)"
-      return 0
-    fi
+# generic helper (by fixed index)
+extract_idx() {
+  # $1=edr $2=idx $3=out
+  local edr="$1" idx="$2" out="$3"
+  [[ -s "$edr" ]] || { warn "$(basename "$edr") is empty — skipping"; return 1; }
+  rm -f -- "$out"   # avoid overwrite prompt
+  if printf "%s\n0\n" "$idx" | gmx energy -f "$edr" -o "$out" >/dev/null 2>&1; then
+    ok "$(basename "$out")"
+    return 0
+  else
+    warn "gmx energy failed: $(basename "$edr") idx=$idx → $(basename "$out")"
+    return 1
   fi
-
-  echo "⚠ Failed to extract '$want' from $(basename "$edr")" >&2
-  return 1
 }
-
 
 shopt -s nullglob
 cd "$EDIR"
 
-n_ok=0
-n_warn=0
+# -------- Staged runs (nvt_fc*.edr, npt_fc*.edr) --------
+IDX_T=16
+IDX_P=17
+IDX_RHO=23
 
-# NVT/NPT with FC in filename
 for edr in nvt_fc*.edr npt_fc*.edr; do
   [[ -e "$edr" ]] || continue
-  stem="${edr%.edr}"                   # e.g., nvt_fc1000
+  stem="${edr%.edr}"
   if [[ "$stem" =~ ^(nvt|npt)_fc([0-9]+)$ ]]; then
     typ="${BASH_REMATCH[1]}"; fc="${BASH_REMATCH[2]}"
   else
-    warn "Skipping unexpected EDR name '$edr'"; ((n_warn++)); continue
+    warn "Skipping unexpected EDR name '$edr'"; continue
   fi
-  if ! is_nonempty "$edr"; then warn "$edr is empty — skipping"; ((n_warn++)); continue; fi
   T="$(temp_for_fc "$fc" || echo 303)"
-
   if [[ "$typ" == "nvt" ]]; then
-    energy_by_name_or_index "$edr" "${OUTDIR}/nvt_${T}K_${fc}_T.xvg" temperature && ((n_ok++)) || ((n_warn++))
+    extract_idx "$edr" "$IDX_T"   "${OUTDIR}/nvt_${T}K_${fc}_T.xvg"
   else
-    energy_by_name_or_index "$edr" "${OUTDIR}/npt_${T}K_${fc}_P.xvg"   pressure && ((n_ok++)) || ((n_warn++))
-    energy_by_name_or_index "$edr" "${OUTDIR}/npt_${T}K_${fc}_rho.xvg" density  && ((n_ok++)) || ((n_warn++))
+    extract_idx "$edr" "$IDX_P"   "${OUTDIR}/npt_${T}K_${fc}_P.xvg"
+    extract_idx "$edr" "$IDX_RHO" "${OUTDIR}/npt_${T}K_${fc}_rho.xvg"
   fi
 done
 
-# Final NPT (unrestrained)
-if [[ -f npt_final.edr ]] && is_nonempty npt_final.edr; then
-  energy_by_name_or_index "npt_final.edr" "${OUTDIR}/npt_303K_0_P.xvg"   pressure && ((n_ok++)) || ((n_warn++))
-  energy_by_name_or_index "npt_final.edr" "${OUTDIR}/npt_303K_0_rho.xvg" density  && ((n_ok++)) || ((n_warn++))
+# -------- Final NPT (unrestrained): file may be npt_final.edr or npt.edr --------
+FINAL_EDR=""
+if   [[ -f npt_final.edr ]]; then FINAL_EDR="npt_final.edr"
+elif [[ -f npt.edr       ]]; then FINAL_EDR="npt.edr"
 fi
 
-# EM potential (optional)
-if [[ -f em.edr ]] && is_nonempty em.edr; then
-  energy_by_name_or_index "em.edr" "${OUTDIR}/em_potential.xvg" potential && ((n_ok++)) || ((n_warn++))
+if [[ -n "$FINAL_EDR" ]]; then
+  # Per your observation: Pressure=16, Density=22 in this file
+  extract_idx "$FINAL_EDR" 16 "${OUTDIR}/npt_303K_0_P.xvg"
+  extract_idx "$FINAL_EDR" 22 "${OUTDIR}/npt_303K_0_rho.xvg"
 fi
 
-echo "---"
-echo "Extracted curves: ${n_ok}, warnings: ${n_warn}"
-# Always succeed; plotting will use whatever exists
-exit 0
+# -------- EM potential (Potential = 11 here) --------
+if [[ -f em.edr ]]; then
+  extract_idx "em.edr" 11 "${OUTDIR}/em_potential.xvg"
+fi
+
+echo "Done."
