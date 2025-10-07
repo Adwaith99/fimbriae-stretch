@@ -49,8 +49,8 @@ TMPDIR="$ROOT/manifests/_pending_split"; mkdir -p "$TMPDIR"
 HEADER=$(head -n1 "$MAN")
 declare -A SYS_ROWS
 for line in "${PENDING[@]}"; do
-  # Split space-separated fields: uid system variant speed_nm_per_ns k_kj_mol_nm2 rep status
-  IFS=' ' read -r uid system variant speed_nm_per_ns k_kj_mol_nm2 rep status <<< "$line"
+  # Split comma-separated fields: uid,system,variant,speed_nm_per_ns,k_kj_mol_nm2,rep,status
+  IFS=',' read -r uid system variant speed_nm_per_ns k_kj_mol_nm2 rep status <<< "$line"
   sys="$system"
   [[ -z "$sys" ]] && continue
   SYS_ROWS["$sys"]+="$line"$'\n'
