@@ -42,6 +42,9 @@ echo "Total pending rows: ${#PENDING[@]}"
 echo "DEBUG: Pending rows:"
 for row in "${PENDING[@]}"; do
   echo "$row"
+  IFS=',' read -r uid system variant speed_nm_per_ns k_kj_mol_nm2 rep status <<< "$row"
+  fields=("$uid" "$system" "$variant" "$speed_nm_per_ns" "$k_kj_mol_nm2" "$rep" "$status")
+  echo "DEBUG: Parsed fields (${#fields[@]}):" "${fields[@]}"
 done
 
 # Group rows per system -> write one filtered manifest per system -> submit separate arrays.
