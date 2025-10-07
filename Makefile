@@ -39,6 +39,7 @@ prep-em:
 build: manifest
 	bash scripts/submit_builds.sh
 
+# --- Submit SMD array jobs over PENDING rows ---
 pulls: manifest
 	bash scripts/submit_arrays.sh
 

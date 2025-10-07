@@ -14,16 +14,16 @@ CFG="$ROOT/config.yaml"
 [[ -f "$MAN" ]] || { echo "Manifest not found: $MAN"; exit 2; }
 
 # Read global array cap (fallback 5) and an optional pulling performance map.
-ARRAY_CAP=$(python3 - <<'PY'
+ARRAY_CAP=$(python3 - "$CFG" <<'PY'
 import yaml, sys
 try:
-    c=yaml.safe_load(open(sys.argv[1]))
-    cap=c.get('globals',{}).get('slurm',{}).get('array_cap',5)
-    print(int(cap))
+  c=yaml.safe_load(open(sys.argv[1]))
+  cap=c.get('globals',{}).get('slurm',{}).get('array_cap',5)
+  print(int(cap))
 except Exception:
-    print(5)
+  print(5)
 PY
-"$CFG")
+)
 
 # Optional config extension (not yet documented): per-system expected ns_per_day for pulling (to derive walltime).
 # If absent we skip dynamic walltime override and use pulls_array_submit.sh defaults.
@@ -60,7 +60,7 @@ for sys in "${!SYS_ROWS[@]}"; do
 
   # Estimate walltime (placeholder: could be refined). We compute time to target extension
   # for the *slowest* speed in this system subset to guarantee coverage.
-  WALL=$(python3 - <<'PY' "$CFG" "$RUNMAN" "$sys"
+  WALL=$(python3 - "$CFG" "$RUNMAN" "$sys" <<'PY'
 import yaml, csv, sys, math
 cfg=yaml.safe_load(open(sys.argv[1]))
 g=cfg.get('globals',{})
@@ -89,7 +89,8 @@ days=(needed_ns/perf)*safety
 hours_total=max(1, days*24.0)
 hours_ceil=min(int(math.ceil(hours_total)), int(max_h))
 print(f"{hours_ceil:02d}:00:00")
-PY)
+PY
+)
 
   # Cap concurrency per system
   CAP_USED=$(( ARRAY_CAP>0 ? ARRAY_CAP : 1 ))
