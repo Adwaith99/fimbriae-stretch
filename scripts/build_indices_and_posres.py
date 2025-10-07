@@ -1,177 +1,221 @@
 #!/usr/bin/env python3
 """
-Builds final pull index and local-numbered posre for a system+variant.
+Build per-system variant indices and a local anchor posres ITP,
+and robustly rename selected groups to [ Anchor ] and [ Pulled ].
 
-- Step A: make_ndx on clean.pdb with selections -> pull_base.ndx
-- Step A.5: rename headers matching the selection text to [ Anchor ] / [ Pulled ]
-- Step B: import onto ions.gro with -n; create complement of Protein; post-rename to [ NonProtein ]
-- Step C: map Anchor global atoms -> local indices in the anchor molecule .itp; write posre_anchor_local.itp
+Usage:
+    python3 scripts/build_indices_and_posres.py <SYSTEM> <VARIANT>
 
-USAGE: build_indices_and_posres.py <system> <variant_id>
+Outputs:
+    indices/<SYSTEM>/<VARIANT>_pull.ndx
+    indices/<SYSTEM>/<VARIANT>_posre_anchor_local.itp
 """
-import sys, yaml, subprocess, re
+
+import os
+import re
+import sys
+import yaml
+import shutil
+import subprocess
 from pathlib import Path
+from typing import List, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
-CFG  = yaml.safe_load(open(ROOT/"config.yaml"))
-SYSTEM = sys.argv[1]
-VARID  = sys.argv[2]
+CFG  = ROOT / "config.yaml"
 
-syscfg = next(s for s in CFG["systems"] if s["name"]==SYSTEM)
-variant = next(v for v in syscfg["variants"] if v["id"]==VARID)
-
-build = ROOT/f"systems/{SYSTEM}/00_build"
-clean = build/"clean.pdb"
-ionsg = build/"ions.gro"      # exists after build; else use npt_303K_0.gro for atom table
-final_gro = build/"npt_303K_0.gro"
-topol_top = build/"topol.top"
-anchor_itp = Path(syscfg["anchor_molecule_itp"])
-
-idx_dir = ROOT/f"indices/{SYSTEM}"
-idx_dir.mkdir(parents=True, exist_ok=True)
-base_ndx = idx_dir/f"{VARID}_pull_base.ndx"
-base_named = idx_dir/f"{VARID}_pull_base_named.ndx"
-final_ndx = idx_dir/f"{VARID}_pull.ndx"
-posre_itp = idx_dir/f"{VARID}_posre_anchor_local.itp"
-
-# ---- Step A: base ndx on clean.pdb ----
-selA = f"chain {variant['anchor']['chain']} & r {variant['anchor']['res']}"
-selP = f"chain {variant['pulled']['chain']} & r {variant['pulled']['res']}"
-
-if not base_ndx.exists():
-    cmd = f"gmx make_ndx -f {clean} -o {base_ndx}"
-    inp = f"{selA}\n{selP}\nq\n"
-    subprocess.run(cmd.split(), input=inp.encode(), check=True)
-
-# ---- Step A.5: rename headers by match substrings ----
-from rename_ndx_by_match import main as _  # allow both direct & import
-# If imported main not available, do inline:
-def rename_headers(fin, fout, ma, mp):
-    text = Path(fin).read_text()
-    headers = list(re.finditer(r'(?m)^\[\s*(.+?)\s*\]\s*$', text))
-    out=[]; last=0; ra=rp=False
-    for m in headers:
-        out.append(text[last:m.start()])
-        head=m.group(1)
-        if (not ra) and (ma in head):
-            out.append("[ Anchor ]\n"); ra=True
-        elif (not rp) and (mp in head):
-            out.append("[ Pulled ]\n"); rp=True
-        else:
-            out.append(text[m.start():m.end()])
-        last=m.end()
-    out.append(text[last:])
-    Path(fout).write_text(''.join(out))
-    if not (ra and rp):
-        print("WARN: header rename incomplete (check matches).")
-rename_headers(base_ndx, base_named, selA, selP)
-
-# ---- Step B: import onto ions.gro and append NonProtein ----
-# Import using -n; then add "protein" and "! protein"
-cmd = f"gmx make_ndx -f {ionsg} -n {base_named} -o {final_ndx}"
-inp = "protein\n! protein\nq\n"
-subprocess.run(cmd.split(), input=inp.encode(), check=True)
-
-# Post-rename the complement header (contains '!' and 'Protein') to [ NonProtein ]
-txt = Path(final_ndx).read_text().splitlines()
-for i,l in enumerate(txt):
-    if l.strip().startswith('[') and '!' in l and 'Protein' in l:
-        txt[i] = "[ NonProtein ]"
-Path(final_ndx).write_text("\n".join(txt)+"\n")
-
-# ---- Step C: local-numbered posre for anchor molecule ----
-# C.1 parse final_ndx for [ Anchor ] atom list (global indices)
-def parse_ndx_group(ndx_path, name):
-    atoms=[]; cur=None
-    for line in Path(ndx_path).read_text().splitlines():
-        if line.startswith('['):
-            cur=line.strip()[1:-1].strip()
-            continue
-        if cur==name and line.strip():
-            atoms += [int(x) for x in line.split()]
-    return atoms
-anchor_globals = parse_ndx_group(final_ndx, "Anchor")
-if not anchor_globals:
-    raise SystemExit("No Anchor atoms found in final ndx.")
-
-# C.2 build global atom table from final_gro
-def parse_gro_atoms(gro_path):
-    lines = Path(gro_path).read_text().splitlines()
-    body = lines[2:-1]  # strip title, natoms, box
-    table=[]
-    gi=0
-    for ln in body:
-        gi+=1
-        # GRO fixed columns: resnr(5) resname(5) atom(5) atomnr(5) ...
-        resnr = int(ln[0:5])
-        resnm = ln[5:10].strip()
-        atom  = ln[10:15].strip()
-        table.append((gi,resnr,resnm,atom))
-    return table
-globtab = parse_gro_atoms(final_gro)
-gmap = {gi:(resnr,resnm,atom) for gi,resnr,resnm,atom in globtab}
-
-# C.3 parse local [ atoms ] from anchor molecule .itp
-def parse_itp_atoms(itp_path):
-    lines = Path(itp_path).read_text().splitlines()
-    in_atoms=False; table=[]
-    for ln in lines:
-        s=ln.strip()
-        if not s or s.startswith(';'): continue
-        if s.startswith('['):
-            in_atoms = (s.lower().startswith('[ atoms ]'))
-            continue
-        if in_atoms:
-            # fields: nr type resnr resname atom cgnr charge mass
-            cols=s.split()
-            try:
-                nr = int(cols[0]); resnr=int(cols[2]); resnm=cols[3]; atom=cols[4]
-            except Exception:
-                continue
-            table.append((nr,resnr,resnm,atom))
-    return table
-localtab = parse_itp_atoms(anchor_itp)
-# Build lookup by (resnr,resnm,atom) -> local index
-lookup={}
-for nr,resnr,resnm,atom in localtab:
-    lookup.setdefault((resnr,resnm,atom), []).append(nr)
-
-# C.4 map global anchor atoms -> local indices
-local_idxs=[]
-ambiguous=[]
-missing=[]
-for gi in anchor_globals:
-    key = gmap.get(gi,None)
-    if not key:
-        missing.append(gi); continue
-    cand = lookup.get(key, [])
-    if len(cand)==1:
-        local_idxs.append(cand[0])
-    elif len(cand)>1:
-        ambiguous.append((gi,key,cand))
+def sh(cmd, cwd=None, check=True, capture=False):
+    if capture:
+        return subprocess.run(cmd, cwd=cwd, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     else:
-        # try atom-only fallback (rare)
-        miss = True
-        for k,v in lookup.items():
-            if (k[1]==key[1]) and (k[2]==key[2]):
-                local_idxs.append(v[0]); miss=False; break
-        if miss: missing.append((gi,key))
+        return subprocess.run(cmd, cwd=cwd, check=check)
 
-if missing:
-    print(f"WARN: {len(missing)} anchor atoms not mapped to local indices (check numbering/names).")
-if ambiguous:
-    print(f"WARN: {len(ambiguous)} ambiguous mappings; picking first local index for each.")
+def die(msg, code=1):
+    print(f"ERROR: {msg}", file=sys.stderr)
+    sys.exit(code)
 
-local_idxs = sorted(set(local_idxs))
+# ---------- NDX helpers ----------
 
-# C.5 write posre_anchor_local.itp
-fcx,fcy,fcz = CFG["globals"]["posre"]["force"]
-lines = ["[ position_restraints ]", "; i  funct  fcx  fcy  fcz"]
-for li in local_idxs:
-    lines.append(f"{li:6d}     1  {fcx}  {fcy}  {fcz}")
-Path(posre_itp).write_text("\n".join(lines)+"\n")
+_and_tokens = re.compile(r'\b(and|&&|&)\b', re.I)
+_res_tokens = re.compile(r'\b(residue|resid|resi|res|r)\b', re.I)
+_chain_pat  = re.compile(r'\bchain[_\s]*([A-Za-z])\b', re.I)
 
-# Manifest (optional)
-(Path(idx_dir/f"{VARID}_pull_index_manifest.txt")
- .write_text(f"AnchorGlobals={len(anchor_globals)}\nLocalIndices={len(local_idxs)}\n"))
-print(f"OK: wrote {final_ndx} and {posre_itp}")
+def normalize_label(s: str) -> str:
+    s = s.strip()
+    s = s.replace('(', '').replace(')', '')
+    s = _and_tokens.sub('_&_', s)
+    s = _chain_pat.sub(lambda m: f"ch{m.group(1)}", s)
+    s = _res_tokens.sub('r', s)
+    s = re.sub(r'[\s]+', '_', s)
+    s = re.sub(r'__+', '_', s)
+    s = re.sub(r'\br_?([0-9])', r'r_\1', s)
+    s = s.lower()
+    return s
+
+def load_ndx(path: Path) -> Tuple[List[str], List[List[int]]]:
+    groups, atoms = [], []
+    cur = None
+    for line in path.read_text().splitlines():
+        if line.strip().startswith('[') and line.strip().endswith(']'):
+            name = line.strip()[1:-1].strip()
+            groups.append(name)
+            atoms.append([])
+            cur = len(groups) - 1
+        elif cur is not None:
+            for tok in line.split():
+                if tok.isdigit():
+                    atoms[cur].append(int(tok))
+    return groups, atoms
+
+def write_ndx(path: Path, groups: List[str], atoms: List[List[int]]):
+    out = []
+    for name, lst in zip(groups, atoms):
+        out.append(f"[ {name} ]")
+        line = []
+        for i, a in enumerate(lst, 1):
+            line.append(str(a))
+            if i % 15 == 0:
+                out.append(" ".join(line))
+                line = []
+        if line:
+            out.append(" ".join(line))
+        out.append("")  # blank line between groups
+    path.write_text("\n".join(out))
+
+def choose_group(groups: List[str], pattern: str) -> int:
+    norm_pat = normalize_label(pattern)
+    candidates = []
+    for i, g in enumerate(groups):
+        ng = normalize_label(g)
+        if ng == norm_pat:
+            candidates.append((i, g, 'exact'))
+        elif (norm_pat in ng) or (ng in norm_pat):
+            candidates.append((i, g, 'fuzzy'))
+
+    if not candidates:
+        # relaxed stripped compare
+        strip = lambda x: re.sub(r'[^a-z0-9]+', '', normalize_label(x))
+        sp = strip(pattern)
+        for i, g in enumerate(groups):
+            if strip(g) == sp:
+                candidates.append((i, g, 'stripped'))
+
+    if not candidates:
+        die(f"No group matched pattern: '{pattern}' (normalized: '{norm_pat}')")
+
+    exact = [c for c in candidates if c[2] == 'exact']
+    if len(exact) == 1:
+        return exact[0][0]
+    if len(candidates) == 1:
+        return candidates[0][0]
+
+    msg = ["Pattern is ambiguous. Candidates:"]
+    for i, g, kind in candidates:
+        msg.append(f"  - [{i}] '{g}' (match={kind}, norm='{normalize_label(g)}')")
+    die("\n".join(msg))
+
+# ---------- Config helpers ----------
+
+def load_patterns(cfg, system: str, variant: str):
+    # Variant-level first, then system-level fallback
+    sys_cfg = cfg.get("systems", {}).get(system, {})
+    var_cfg = (sys_cfg.get("variants") or {}).get(variant, {})
+
+    anchor = var_cfg.get("anchor_pattern") or sys_cfg.get("anchor_pattern")
+    pulled = var_cfg.get("pulled_pattern") or sys_cfg.get("pulled_pattern")
+    if not anchor or not pulled:
+        die(f"Missing anchor/pulled patterns for {system}/{variant}. "
+            f"Provide anchor_pattern & pulled_pattern in config.yaml (variant or system level).")
+    return anchor, pulled
+
+# ---------- Posres anchor (local) ----------
+
+def write_local_posre_itp(outfile: Path, atom_indices: List[int], fc_kj_mol_nm2: float = 1000.0):
+    """
+    Write a minimal posre file for the anchor atoms in *local* coordinates.
+    """
+    lines = [
+        "; Local posre for Anchor group (generated)",
+        "[ position_restraints ]",
+        "; ai  funct      fc_x      fc_y      fc_z"
+    ]
+    for ai in atom_indices:
+        lines.append(f"{ai:6d}     1   {fc_kj_mol_nm2:.1f}   {fc_kj_mol_nm2:.1f}   {fc_kj_mol_nm2:.1f}")
+    outfile.write_text("\n".join(lines) + "\n")
+
+# ---------- Main ----------
+
+def main():
+    if len(sys.argv) != 3:
+        print(f"Usage: {sys.argv[0]} <SYSTEM> <VARIANT>", file=sys.stderr)
+        sys.exit(2)
+
+    system  = sys.argv[1]
+    variant = sys.argv[2]
+
+    cfg = yaml.safe_load(CFG.read_text())
+    anchor_pat, pulled_pat = load_patterns(cfg, system, variant)
+
+    build_dir = ROOT / "systems" / system / "00_build"
+    if not (build_dir / "npt_final.gro").exists():
+        die(f"Build artifact missing: {build_dir/'npt_final.gro'}")
+
+    indices_dir = ROOT / "indices" / system
+    indices_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_ndx   = indices_dir / f"{variant}_tmp.ndx"
+    pull_ndx  = indices_dir / f"{variant}_pull.ndx"
+    posre_itp = indices_dir / f"{variant}_posre_anchor_local.itp"
+
+    # 1) Start from a fresh index (Protein / non-Protein, etc.)
+    # We rely on gromacs default groups from the TPR.
+    tpr = build_dir / "npt_final.tpr"
+    if not tpr.exists():
+        # create tpr quickly from gro/top if needed (rare)
+        die(f"Missing {tpr} (expected from final NPT).")
+
+    # Create a base ndx from the tpr (includes standard groups)
+    # gmx make_ndx -f <tpr> -o tmp.ndx <<< "q"
+    sh(["gmx", "make_ndx", "-f", str(tpr), "-o", str(tmp_ndx)], check=True, capture=True).stdout
+
+    # 2) Load and rename to Anchor/Pulled
+    groups, atoms = load_ndx(tmp_ndx)
+
+    # Create NonProtein if missing (helper for templates)
+    try:
+        idx_np = groups.index("Non-Protein")
+    except ValueError:
+        # Build "non-protein" as all atoms not in Protein
+        try:
+            idx_prot = groups.index("Protein")
+        except ValueError:
+            idx_prot = None
+        if idx_prot is not None:
+            all_atoms = set(a for lst in atoms for a in lst)
+            prot_atoms = set(atoms[idx_prot])
+            nonprot = sorted(all_atoms - prot_atoms)
+            groups.append("NonProtein")
+            atoms.append(nonprot)
+
+    # If Anchor/Pulled exist already, we’ll replace names anyway to ensure consistency.
+    # Choose matches using robust normalization.
+    idx_anchor = choose_group(groups, anchor_pat)
+    idx_pulled = choose_group(groups, pulled_pat)
+
+    old_anchor, old_pulled = groups[idx_anchor], groups[idx_pulled]
+    groups[idx_anchor] = "Anchor"
+    groups[idx_pulled] = "Pulled"
+
+    write_ndx(tmp_ndx, groups, atoms)
+
+    # 3) Persist final .ndx under the expected name
+    shutil.copyfile(tmp_ndx, pull_ndx)
+    print(f"[OK] Renamed groups: '{old_anchor}'→'Anchor', '{old_pulled}'→'Pulled'")
+    print(f"[OK] Wrote {pull_ndx}")
+
+    # 4) Write a local posre for Anchor (force constant from config if present)
+    fc = (cfg.get("globals", {}) or {}).get("anchor_posre_k_kj_mol_nm2", 1000.0)
+    write_local_posre_itp(posre_itp, atoms[idx_anchor], float(fc))
+    print(f"[OK] Wrote {posre_itp} (fc={fc} kJ/mol/nm^2)")
+
+if __name__ == "__main__":
+    main()
