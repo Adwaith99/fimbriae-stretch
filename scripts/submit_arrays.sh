@@ -28,8 +28,6 @@ PY
 # Optional config extension (not yet documented): per-system expected ns_per_day for pulling (to derive walltime).
 # If absent we skip dynamic walltime override and use pulls_array_submit.sh defaults.
 
-  for(i=1;i<=NF;i++){ gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", $i) }
-  status=$7; if(status=="" || tolower(status)=="pending") print $0 }' "$MAN")
 echo "DEBUG: Filtering manifest rows for status=='pending' (case-insensitive) or empty."
 readarray -t PENDING < <(awk -F, 'BEGIN{IGNORECASE=1} NR==1{hdr=$0;next} {
   for(i=1;i<=NF;i++){ gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", $i) }
