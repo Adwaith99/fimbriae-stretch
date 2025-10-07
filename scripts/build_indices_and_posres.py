@@ -115,16 +115,74 @@ def choose_group(groups: List[str], pattern: str) -> int:
 
 # ---------- Config helpers ----------
 
-def load_patterns(cfg, system: str, variant: str):
-    # Variant-level first, then system-level fallback
-    sys_cfg = cfg.get("systems", {}).get(system, {})
-    var_cfg = (sys_cfg.get("variants") or {}).get(variant, {})
+def _synthesize_pattern(obj):
+    """Turn structured selector {chain: 'A', res: '135-150'} into a textual pattern
+    that matches the normalization logic used later. Flexible keys accepted:
+      { chain: 'A', res: '135-150'}
+      { chain: 'A', residues: '135-150'}
+    The produced pattern looks like: "chain A & r 135-150" or just "chain A" if no res.
+    """
+    if not isinstance(obj, dict):
+        return None
+    chain = obj.get('chain') or obj.get('ch') or obj.get('c')
+    res   = obj.get('res') or obj.get('residues') or obj.get('range')
+    if not chain and not res:
+        return None
+    parts = []
+    if chain:
+        parts.append(f"chain {chain}")
+    if res:
+        # Accept forms like "135-150" or list; leave as-is
+        parts.append(f"r {res}")
+    return ' & '.join(parts) if parts else None
 
-    anchor = var_cfg.get("anchor_pattern") or sys_cfg.get("anchor_pattern")
-    pulled = var_cfg.get("pulled_pattern") or sys_cfg.get("pulled_pattern")
+def load_patterns(cfg, system: str, variant: str):
+    """Resolve anchor/pulled selection patterns.
+
+    Priority order:
+      1. Explicit variant-level anchor_pattern / pulled_pattern
+      2. Explicit system-level anchor_pattern / pulled_pattern
+      3. Structured variant-level {anchor: {chain,res}, pulled:{...}}
+      4. Structured system-level anchor / pulled objects
+    """
+    # Historical format in this repository uses a list of dicts under systems.
+    systems_list = cfg.get('systems', [])
+    sys_entry = next((s for s in systems_list if s.get('name') == system), None)
+    if sys_entry is None:
+        die(f"System '{system}' not found in config")
+
+    # Normalize variants as dict keyed by id for easier lookup
+    var_entry = None
+    for v in sys_entry.get('variants', []):
+        if v.get('id') == variant:
+            var_entry = v
+            break
+
+    if var_entry is None:
+        die(f"Variant '{variant}' not defined under system '{system}'")
+
+    # 1 / 2: explicit patterns first
+    anchor = var_entry.get('anchor_pattern') or sys_entry.get('anchor_pattern')
+    pulled = var_entry.get('pulled_pattern') or sys_entry.get('pulled_pattern')
+
+    # 3: structured variant selectors
+    if not anchor and 'anchor' in var_entry:
+        anchor = _synthesize_pattern(var_entry['anchor'])
+    if not pulled and 'pulled' in var_entry:
+        pulled = _synthesize_pattern(var_entry['pulled'])
+
+    # 4: structured system-level fallback (rare)
+    if not anchor and 'anchor' in sys_entry:
+        anchor = _synthesize_pattern(sys_entry['anchor'])
+    if not pulled and 'pulled' in sys_entry:
+        pulled = _synthesize_pattern(sys_entry['pulled'])
+
     if not anchor or not pulled:
-        die(f"Missing anchor/pulled patterns for {system}/{variant}. "
-            f"Provide anchor_pattern & pulled_pattern in config.yaml (variant or system level).")
+        die(
+            "Unable to derive anchor/pulled selection patterns for "
+            f"{system}/{variant}. Define either anchor_pattern/pulled_pattern OR "
+            "structured anchor/pulled with chain/res fields."
+        )
     return anchor, pulled
 
 # ---------- Posres anchor (local) ----------

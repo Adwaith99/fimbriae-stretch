@@ -1,20 +1,39 @@
 #!/usr/bin/env bash
-# One array task == one replicate (self-requeue; single-file -append)
+# One array task == one replicate (single pass, no self-requeue)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
-MAN="$ROOT/manifests/manifest.csv"
 CFG="$ROOT/config.yaml"
+MAN="${FIM_PULL_MANIFEST:-$ROOT/manifests/manifest.csv}"
 IDX="${SLURM_ARRAY_TASK_ID:-1}"
-JOBID="${SLURM_JOB_ID:-0}"
 
 say(){ echo "[$(date +'%F %T')] $*"; }
 
 # ---------- 0) Row lookup ----------
-ROW=$(awk -F, -v i="$IDX" 'NR==1{next} NR-1==i{print; exit}' "$MAN" || true)
-[[ -n "$ROW" ]] || { echo "No manifest row for index $IDX"; exit 1; }
+
+echo "[runner] Using manifest: $MAN"
+echo "[runner] Array index: $IDX"
+
+ROW=$(awk -F, -v n="$IDX" '
+BEGIN{IGNORECASE=1}
+NR==1{next}
+{
+  # trim whitespace + CR from each field
+  for(i=1;i<=NF;i++){ gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", $i) }
+  status=$7
+  if (status=="" || tolower(status)=="pending") {
+    pending[++cnt]=$0
+  }
+}
+END{
+  if (n in pending) print pending[n]
+}' "$MAN")
+
+[[ -n "${ROW:-}" ]] || { echo "[runner] ERROR: No pending row for array index $IDX in $MAN"; exit 3; }
+
 IFS=, read -r uid system variant speed k rep status <<<"$ROW"
-say "UID=$uid SYS=$system VAR=$variant v=${speed} k=${k} REP=${rep} STATUS=${status}"
+echo "[runner] ROW: uid=$uid system=$system variant=$variant speed=$speed k=$k rep=$rep status=$status"
+
 
 # ---------- 1) Ensure build done ----------
 BD="$ROOT/systems/$system/00_build"
@@ -81,10 +100,10 @@ TARGET_EXT=$(python3 - <<PY
 import yaml; print(yaml.safe_load(open("$CFG"))["globals"]["target_extension_nm"])
 PY
 )
-# Steps to reach target at given rate (safety x1.2)
+# Conservative steps: equal to target distance / (rate*dt) with 1.1 safety
 NSTEPS=$(python3 - <<PY
 dt=$DT_PS; v=$RATE; targ=$TARGET_EXT
-steps=max(1,int((targ/(v*dt))*1.2))
+steps=max(1,int((targ/(v*dt))*1.1))
 print(steps)
 PY
 )
@@ -147,22 +166,19 @@ FLAGS="$(build_mdrun_flags)"
 say "Launching mdrun with $FLAGS"
 gmx mdrun -v -deffnm pull ${FLAGS}
 
-# ---------- 8) Progress check → DONE or REQUEUE ----------
+# ---------- 8) Completion tag (single pass) ----------
+CUR_EXT=0
 if [[ -f pullx.xvg ]]; then
-  CUR_EXT=$(awk '!/^[@#]/{x=$2} END{print (x?x:0)}' pullx.xvg)
-else
-  CUR_EXT=0
+  CUR_EXT=$(awk '!/^[@#]/{x=$2} END{print (x?x:0)}' pullx.xvg || echo 0)
 fi
 TARGET=$(python3 - <<PY
 import yaml; print(yaml.safe_load(open("$CFG"))["globals"]["target_extension_nm"])
 PY
 )
+STATUS="PARTIAL"
+awk -v U="$uid" -v cur="$CUR_EXT" -v tgt="$TARGET" -F, 'BEGIN{OFS=","} NR==1{print;next} {if($1==U){if(cur>=tgt){$7="DONE"} else {$7="PARTIAL"}} print}' "$MAN" > "$MAN.tmp" && mv "$MAN.tmp" "$MAN"
 if awk -v e="$CUR_EXT" -v t="$TARGET" 'BEGIN{exit(e>=t?0:1)}'; then
   say "[$uid] DONE (extension ${CUR_EXT} ≥ ${TARGET})"
-  awk -v U="$uid" -F, 'BEGIN{OFS=","} NR==1{print;next} $1==U{$7="DONE"} {print}' "$MAN" > "$MAN.tmp" && mv "$MAN.tmp" "$MAN"
-  exit 0
 else
-  say "[$uid] Continue (${CUR_EXT} < ${TARGET}) → requeue"
-  scontrol requeue "$JOBID"
-  exit 0
+  say "[$uid] PARTIAL (extension ${CUR_EXT} < ${TARGET})"
 fi

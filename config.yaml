@@ -36,13 +36,11 @@ systems:
     box: [70, 15, 15]            # nm (for build)
     # molecule itp that contains the ANCHOR chain (posre will be included here)
     anchor_molecule_itp: "systems/fimA_WT/00_build/topol_chain_D.itp"
+    perf_ns_per_day: 50          # system-specific pulling throughput (ns/day)
 
     variants:
       - id: AtoD
-        # selections written as we will type them into make_ndx on clean.pdb
         anchor: { chain: "D", res: "135-150" }
         pulled: { chain: "A", res: "285-300" }
-
-    # override defaults if desired:
-    speeds: [0.10]
-    n_reps: 1
+        speeds: [0.10]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate count

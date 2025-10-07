@@ -39,12 +39,15 @@ with open(SYS, "w", newline="") as f:
 
 for sys in CFG["systems"]:
     sname = sys["name"]
-    speeds = sys.get("speeds", speeds_global)
-    nreps  = sys.get("n_reps", nreps_default)
+    sys_speeds = sys.get("speeds")  # may be None; fallback handled below
+    sys_nreps  = sys.get("n_reps")
     for var in sys["variants"]:
         vid = var["id"]
-        for sp in speeds:
-            for rep in range(1, nreps+1):
+        # Variant-level overrides take highest precedence
+        v_speeds = var.get("speeds") or sys_speeds or speeds_global
+        v_nreps  = var.get("n_reps") or sys_nreps or nreps_default
+        for sp in v_speeds:
+            for rep in range(1, v_nreps+1):
                 U = uid(sname, vid, sp, kval, rep)
                 row = {
                     "uid": U,
