@@ -10,10 +10,10 @@ want = sys.argv[2].lower().strip()
 
 # Accept common aliases
 ALIASES = {
-    "temperature": ["temperature", "temp.", "temp"],
-    "pressure":    ["pressure", "pres.", "press"],
-    "density":     ["density", "mass density", "rho"],
-    "potential":   ["potential", "potential energy"],
+    "temperature": ["Temperature", "temp.", "temp"],
+    "pressure":    ["Pressure", "pres.", "press"],
+    "density":     ["Density", "mass density", "rho"],
+    "potential":   ["Potential", "potential energy"],
 }
 candidates = ALIASES.get(want, [want])
 
