@@ -9,6 +9,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 MAN="$ROOT/manifests/manifest.csv"
+# Ensure manifest uses Unix line endings for correct parsing
+dos2unix "$MAN" 2>/dev/null || sed -i 's/\r$//' "$MAN"
 CFG="$ROOT/config.yaml"
 
 [[ -f "$MAN" ]] || { echo "Manifest not found: $MAN"; exit 2; }
