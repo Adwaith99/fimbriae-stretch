@@ -29,13 +29,17 @@ globals:
     time_npt: "02:30:00"
     time_npt_final: "24:00:00" # longer because it’s the production-like segment
 
+  smd:
+    axis: x
+    # pattern to auto-detect anchor molecule ITP from chain:
+    anchor_chain_template: "systems/{system}/00_build/topol_Protein_chain_{chain}.itp"
+
+
 
 systems:
   - name: fimA_WT
     pdb: "systems/fimA_WT/nfimA_5chains_beta_deleted.pdb"
     box: [70, 15, 15]            # nm (for build)
-    # molecule itp that contains the ANCHOR chain (posre will be included here)
-    anchor_molecule_itp: "systems/fimA_WT/00_build/topol_chain_D.itp"
     perf_ns_per_day: 50          # system-specific pulling throughput (ns/day)
 
     variants:

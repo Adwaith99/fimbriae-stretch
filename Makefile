@@ -78,3 +78,22 @@ reset-all:
 .PHONY: analyze-eq
 analyze-eq:
 	bash pipelines/analyze_eq.sh $(SYS)
+
+.PHONY: posteq-sample smd-manifest smd-submit smd-qc
+
+# 1) Sample start frames from final NPT (per system/variant), random picks per variant
+posteq-sample:
+	@bash pipelines/posteq_sample_starts.sh
+
+# 2) Build SMD manifest (systems × variants × speeds × replicates; each replicate gets one start)
+smd-manifest:
+	@python3 scripts/smd_build_manifest.py
+
+# 3) Submit one Slurm array per system (capped by globals.slurm.array_cap), no requeue
+smd-submit: smd-manifest
+	@bash pipelines/smd_array_submit.sh
+
+# 4) Optional QC pass over completed runs (TSV and PNG if enabled)
+smd-qc:
+	@python3 scripts/smd_qc.py
+
