@@ -52,7 +52,8 @@ for sys in "${systems[@]}"; do
 
   echo "[smd-submit] Submitting $sys with $N tasks (cap %$ACAP)"
 
-  sbatch <<SB
+  ${SLURM_TEST_ONLY:+echo "[smd-submit] Using sbatch --test-only"; }
+  sbatch ${SLURM_TEST_ONLY:+--test-only} <<SB
 #!/bin/bash
 #SBATCH --job-name=${sys}_smd
 #SBATCH --partition=${PART}
@@ -71,5 +72,6 @@ LINE=\$(sed -n "\${ROW}p" ${tmp})
 
 python3 scripts/smd_runner.sh "\$LINE"
 SB
+
 
 done

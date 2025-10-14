@@ -160,7 +160,15 @@ fi
 
 # Grompp + MDrun
 gmx grompp -f pull.mdp -c start.gro -p topol.top -n index.ndx -o pull.tpr
+
+# >>> ADD THIS BLOCK (DRY RUN SWITCH) <<<
+if [[ "${DRY_RUN:-}" == "1" ]]; then
+  echo "[smd-runner] DRY RUN: grompp succeeded; skipping mdrun."
+  exit 0
+fi
+# >>> END ADD <<<
 gmx mdrun  -deffnm pull -ntmpi 1
+
 
 # Log resolved parameters
 python3 - <<PY

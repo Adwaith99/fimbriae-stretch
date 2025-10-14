@@ -97,3 +97,13 @@ smd-submit: smd-manifest
 smd-qc:
 	@python3 scripts/smd_qc.py
 
+.PHONY: smd-dry-run-one
+# Runs the *first* manifest row locally in DRY_RUN=1 mode: exercises sampling, manifest,
+# direction/init computation, index discovery, and grompp — but skips mdrun.
+smd-dry-run-one: smd-manifest
+	@LINE="$$(awk -F, 'NR==2{print $$0}' manifests/smd_manifest.csv)"; \
+	if [ -z "$$LINE" ]; then echo "[smd-dry-run] No rows in manifests/smd_manifest.csv"; exit 2; fi; \
+	echo "[smd-dry-run] Testing with: $$LINE"; \
+	module purge; module load $$(python3 -c 'import yaml;print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gromacs_module"])'); \
+	DRY_RUN=1 python3 scripts/smd_runner.sh "$$LINE"
+
