@@ -74,9 +74,17 @@ if [[ -f "${NDX_SRC}" ]]; then ln -sf "${NDX_SRC}" index.ndx; fi
 if ! grep -q "^\[ *Anchor *\]" index.ndx 2>/dev/null || ! grep -q "^\[ *Pulled *\]" index.ndx 2>/dev/null; then
   echo "[smd-runner] INFO: [Anchor]/[Pulled] missing; attempting to build indices..."
   if [[ -f "${ROOT}/scripts/build_indices_and_posres.py" ]]; then
-    python3 "${ROOT}/scripts/build_indices_and_posres.py" --system "${system}" --variant "${variant}"
-    [[ -f "${NDX_SRC}" ]] && ln -sf "${NDX_SRC}" index.ndx
+  echo "[smd-runner] INFO: running build_indices_and_posres.py ${system} ${variant}"
+  python3 "${ROOT}/scripts/build_indices_and_posres.py" "${system}" "${variant}"
+  # try again
+  NDX_SRC="${ROOT}/systems/${system}/00_build/index.ndx"
+  if [[ -f "${NDX_SRC}" ]]; then
+    ln -sf "${NDX_SRC}" index.ndx
   fi
+else
+  echo "[smd-runner] ERROR: ${ROOT}/scripts/build_indices_and_posres.py not found." >&2
+fi
+
 fi
 if ! grep -q "^\[ *Anchor *\]" index.ndx || ! grep -q "^\[ *Pulled *\]" index.ndx; then
   echo "[smd-runner] ERROR: Could not find/create index with [Anchor] and [Pulled]." >&2
