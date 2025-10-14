@@ -46,5 +46,5 @@ systems:
       - id: AtoD
         anchor: { chain: "D", res: "135-150" }
         pulled: { chain: "A", res: "285-300" }
-        speeds: [0.10]   # variant-specific speeds
-        n_reps: 1        # variant-specific replicate count
+        speeds: [0.02, 0.05, 0.10, 0.2, 0.5]   # variant-specific speeds
+        n_reps: 2        # variant-specific replicate count
