@@ -75,7 +75,28 @@ if ! grep -q "^\[ *Anchor *\]" index.ndx 2>/dev/null || ! grep -q "^\[ *Pulled *
   echo "[smd-runner] INFO: [Anchor]/[Pulled] missing; attempting to build indices..."
   if [[ -f "${ROOT}/scripts/build_indices_and_posres.py" ]]; then
   echo "[smd-runner] INFO: running build_indices_and_posres.py ${system} ${variant}"
-  python3 "${ROOT}/scripts/build_indices_and_posres.py" "${system}" "${variant}"
+
+  # Make sure prints flush immediately, and prevent silent indefinite hangs.
+  # Requires coreutils `timeout` (present on most clusters).
+  export PYTHONUNBUFFERED=1
+  export GMX_MAXBACKUP=-1
+
+  # Run with a 5-minute timeout; stream stdout/stderr line-by-line.
+  set +e
+  timeout 300s stdbuf -oL -eL python3 "${ROOT}/scripts/build_indices_and_posres.py" "${system}" "${variant}"
+  rc=$?
+  set -e
+
+  if [[ $rc -eq 124 ]]; then
+    echo "[smd-runner] ERROR: build_indices_and_posres.py timed out after 300s."
+    echo "[smd-runner] INFO: Active gmx processes at timeout:"
+    ps -o pid,etime,cmd -u "$USER" | grep -E "gmx( |$)" | grep -v grep || echo "[smd-runner] (none)"
+    exit 2
+  elif [[ $rc -ne 0 ]]; then
+    echo "[smd-runner] ERROR: build_indices_and_posres.py exited with rc=${rc}" >&2
+    exit $rc
+  fi
+
   # try again
   NDX_SRC="${ROOT}/systems/${system}/00_build/index.ndx"
   if [[ -f "${NDX_SRC}" ]]; then
@@ -84,6 +105,7 @@ if ! grep -q "^\[ *Anchor *\]" index.ndx 2>/dev/null || ! grep -q "^\[ *Pulled *
 else
   echo "[smd-runner] ERROR: ${ROOT}/scripts/build_indices_and_posres.py not found." >&2
 fi
+
 
 fi
 if ! grep -q "^\[ *Anchor *\]" index.ndx || ! grep -q "^\[ *Pulled *\]" index.ndx; then

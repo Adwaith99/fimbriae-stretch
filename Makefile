@@ -107,3 +107,11 @@ smd-dry-run-one: smd-manifest
 	module purge; module load $$(python3 -c 'import yaml;print(yaml.safe_load(open("config.yaml"))["globals"]["slurm"]["gromacs_module"])'); \
 	DRY_RUN=1 bash scripts/smd_runner.sh "$$LINE"
 
+.PHONY: indices-test
+indices-test:
+	@sys=$$(awk -F, 'NR==2{print $$1}' manifests/smd_manifest.csv); \
+	var=$$(awk -F, 'NR==2{print $$2}' manifests/smd_manifest.csv); \
+	if [ -z "$$sys" ] || [ -z "$$var" ]; then echo "[indices-test] Need manifests/smd_manifest.csv with at least 1 row."; exit 2; fi; \
+	echo "[indices-test] Running builder for $$sys $$var"; \
+	PYTHONUNBUFFERED=1 timeout 300s stdbuf -oL -eL python3 scripts/build_indices_and_posres.py $$sys $$var
+
