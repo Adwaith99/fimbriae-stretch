@@ -26,3 +26,5 @@ logs/**
 charmm36-jul2022.ff
 
 config.yaml
+
+manifests/**
