@@ -42,9 +42,28 @@ if [[ ! -f "${anchor_itp}" ]]; then
   exit 2
 fi
 
-# Link inputs
-ln -sf "$(realpath "${final_tpr}")" final_npt.tpr
-ln -sf "$(realpath "${final_xtc}")" final_npt.xtc
+# Resolve final_tpr/final_xtc relative to repo root if they are not absolute
+resolve_path() {
+  case "$1" in
+    /*) printf "%s\n" "$1" ;;
+    *)  printf "%s/%s\n" "${ROOT}" "$1" ;;
+  esac
+}
+TPR_ABS="$(resolve_path "${final_tpr}")"
+XTC_ABS="$(resolve_path "${final_xtc}")"
+
+if [[ ! -f "${TPR_ABS}" ]]; then
+  echo "[smd-runner] ERROR: final_tpr not found at ${TPR_ABS}" >&2
+  exit 2
+fi
+if [[ ! -f "${XTC_ABS}" ]]; then
+  echo "[smd-runner] ERROR: final_xtc not found at ${XTC_ABS}" >&2
+  exit 2
+fi
+
+ln -sf "${TPR_ABS}" final_npt.tpr
+ln -sf "${XTC_ABS}" final_npt.xtc
+
 
 # Extract start structure
 echo 0 | gmx trjconv -s final_npt.tpr -f final_npt.xtc -dump "${start_time_ps}" -o start.gro
