@@ -1,0 +1,11 @@
+system,variant,replicate,speed_nm_per_ns,k_kj_mol_nm2,dt_ps,target_extension_nm,axis,perf_ns_per_day,start_time_ps,final_tpr,final_xtc,start_id,anchor_chain,array_cap
+fimA_WT,AtoD,1,0.02,100.0,0.002,6.0,x,50.0,39900.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s300,D,5
+fimA_WT,AtoD,2,0.02,100.0,0.002,6.0,x,50.0,20900.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s110,D,5
+fimA_WT,AtoD,1,0.05,100.0,0.002,6.0,x,50.0,32900.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s230,D,5
+fimA_WT,AtoD,2,0.05,100.0,0.002,6.0,x,50.0,47900.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s380,D,5
+fimA_WT,AtoD,1,0.1,100.0,0.002,6.0,x,50.0,47800.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s379,D,5
+fimA_WT,AtoD,2,0.1,100.0,0.002,6.0,x,50.0,33900.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s240,D,5
+fimA_WT,AtoD,1,0.2,100.0,0.002,6.0,x,50.0,36000.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s261,D,5
+fimA_WT,AtoD,2,0.2,100.0,0.002,6.0,x,50.0,42400.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s325,D,5
+fimA_WT,AtoD,1,0.5,100.0,0.002,6.0,x,50.0,47200.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s373,D,5
+fimA_WT,AtoD,2,0.5,100.0,0.002,6.0,x,50.0,27300.0,systems/fimA_WT/00_build/npt_final.tpr,systems/fimA_WT/00_build/npt_final.xtc,s174,D,5

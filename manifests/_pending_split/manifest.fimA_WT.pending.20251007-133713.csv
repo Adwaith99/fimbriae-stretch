@@ -1,0 +1,11 @@
+uid,system,variant,speed_nm_per_ns,k_kj_mol_nm2,rep,status
+fimA_WT|AtoD|v0.02|k100|rep001,fimA_WT,AtoD,0.02,100,001,PENDING
+fimA_WT|AtoD|v0.02|k100|rep002,fimA_WT,AtoD,0.02,100,002,PENDING
+fimA_WT|AtoD|v0.05|k100|rep001,fimA_WT,AtoD,0.05,100,001,PENDING
+fimA_WT|AtoD|v0.05|k100|rep002,fimA_WT,AtoD,0.05,100,002,PENDING
+fimA_WT|AtoD|v0.10|k100|rep001,fimA_WT,AtoD,0.10,100,001,PENDING
+fimA_WT|AtoD|v0.10|k100|rep002,fimA_WT,AtoD,0.10,100,002,PENDING
+fimA_WT|AtoD|v0.20|k100|rep001,fimA_WT,AtoD,0.20,100,001,PENDING
+fimA_WT|AtoD|v0.20|k100|rep002,fimA_WT,AtoD,0.20,100,002,PENDING
+fimA_WT|AtoD|v0.50|k100|rep001,fimA_WT,AtoD,0.50,100,001,PENDING
+fimA_WT|AtoD|v0.50|k100|rep002,fimA_WT,AtoD,0.50,100,002,PENDING
