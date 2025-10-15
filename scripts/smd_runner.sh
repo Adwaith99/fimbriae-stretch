@@ -153,15 +153,18 @@ print(int(round( (target / rate) / dt )))
 PY
 )
 
-# Flip vec sign to ensure extension proceeds positive along x with positive rate
-if python3 - <<PY
-print("neg" if float("${dx}")<0 else "pos")
+# Choose vec sign so extension is positive with positive rate along x
+sign=$(python3 - <<PY
+dx=float("${dx}")
+print("neg" if dx < 0 else "pos")
 PY
- | grep -q neg; then
+)
+if [[ "${sign}" == "neg" ]]; then
   vec="-1 0 0"
 else
   vec="1 0 0"
 fi
+
 
 # Write pull.mdp
 cat > pull.mdp <<MDP
