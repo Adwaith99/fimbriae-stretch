@@ -218,7 +218,18 @@ else
 fi
 
 # Grompp + MDrun
-gmx grompp -f pull.mdp -c start.gro -p topol.top -n index.ndx -o pull.tpr
+# Tell the preprocessor where to find the forcefield folder referenced by topol.top
+INC="-I ${ROOT}/systems/${system}/00_build"
+if [[ ! -d "${ROOT}/systems/${system}/00_build" ]]; then
+  echo "[smd-runner] WARN: include dir not found: ${ROOT}/systems/${system}/00_build"
+fi
+
+ffdir_guess=$(grep -oE '"[^"]+\.ff/forcefield\.itp"' topol.top | sed -E 's/^"([^"]+)\/forcefield\.itp"$/\1/')
+echo "[smd-runner] topol includes FF: ${ffdir_guess:-<unknown>}"
+
+
+gmx grompp ${INC} -f pull.mdp -c start.gro -p topol.top -n index.ndx -o pull.tpr
+
 
 # >>> ADD THIS BLOCK (DRY RUN SWITCH) <<<
 if [[ "${DRY_RUN:-}" == "1" ]]; then
