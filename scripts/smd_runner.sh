@@ -228,7 +228,27 @@ ffdir_guess=$(grep -oE '"[^"]+\.ff/forcefield\.itp"' topol.top | sed -E 's/^"([^
 echo "[smd-runner] topol includes FF: ${ffdir_guess:-<unknown>}"
 
 
-gmx grompp ${INC} -f pull.mdp -c start.gro -p topol.top -n index.ndx -o pull.tpr
+# Run grompp from the system's 00_build dir so #include paths (e.g., charmm36-*.ff) resolve correctly
+BUILD_DIR="${ROOT}/systems/${system}/00_build"
+if [[ ! -d "${BUILD_DIR}" ]]; then
+  echo "[smd-runner] ERROR: build dir missing: ${BUILD_DIR}" >&2
+  exit 2
+fi
+
+# Log what FF topol.top references (optional)
+ffline=$(grep -oE '"[^"]+\.ff/forcefield\.itp"' "${BUILD_DIR}/topol.top" | head -n1 || true)
+echo "[smd-runner] topol includes FF: ${ffline:-<unknown>}"
+
+# Execute grompp from BUILD_DIR, but point it at the run-dir files for mdp/c/index/outputs
+pushd "${BUILD_DIR}" >/dev/null
+gmx grompp \
+  -f "${run_root}/pull.mdp" \
+  -c "${run_root}/start.gro" \
+  -p "topol.top" \
+  -n "${run_root}/index.ndx" \
+  -o "${run_root}/pull.tpr"
+popd >/dev/null
+
 
 
 # >>> ADD THIS BLOCK (DRY RUN SWITCH) <<<
