@@ -114,11 +114,18 @@ if ! grep -q "^\[ *Anchor *\]" index.ndx || ! grep -q "^\[ *Pulled *\]" index.nd
 fi
 
 # Compute COM(Anchor->Pulled) along x
-gmx select -s start.gro -n index.ndx -select 'com of group "Anchor"' -os com_anchor.xvg
-gmx select -s start.gro -n index.ndx -select 'com of group "Pulled"' -os com_pulled.xvg
+# Write plain numeric output (no xvg headers/legends)
+gmx select -s start.gro -n index.ndx -select 'com of group "Anchor"'  -os com_anchor.xvg  -xvg none
+gmx select -s start.gro -n index.ndx -select 'com of group "Pulled"'  -os com_pulled.xvg  -xvg none
 
-ax=$(awk 'NF==4{t=$1;x=$2;y=$3;z=$4} END{print x}' com_anchor.xvg 2>/dev/null || echo "NaN")
-px=$(awk 'NF==4{t=$1;x=$2;y=$3;z=$4} END{print x}' com_pulled.xvg 2>/dev/null || echo "NaN")
+
+# Files now have numeric rows only; columns are: time  x  y  z
+ax=$(awk 'NF>=2{last=$2} END{print last}' com_anchor.xvg 2>/dev/null)
+px=$(awk 'NF>=2{last=$2} END{print last}' com_pulled.xvg 2>/dev/null)
+# Fallback if empty
+[[ -z "${ax}" ]] && ax="NaN"
+[[ -z "${px}" ]] && px="NaN"
+
 if [[ "${ax}" == "NaN" || "${px}" == "NaN" ]]; then
   echo "[smd-runner] ERROR: Failed to parse COM x-coordinates." >&2
   exit 2
