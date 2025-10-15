@@ -244,6 +244,7 @@ pushd "${BUILD_DIR}" >/dev/null
 gmx grompp \
   -f "${run_root}/pull.mdp" \
   -c "${run_root}/start.gro" \
+  -r "${run_root}/start.gro" \
   -p "topol.top" \
   -n "${run_root}/index.ndx" \
   -o "${run_root}/pull.tpr"
