@@ -238,7 +238,7 @@ q
 
     info(f"STEP B: make_ndx (npt_final.tpr) → find Protein group id")
     # First run: list groups (we capture stdout) and quit
-    out = run_cmd(["gmx","make_ndx","-s",npt_tpr_guess,"-n",ndx_path,"-o",ndx_path,"-quiet"],
+    out = run_cmd(["gmx","make_ndx","-f",npt_tpr_guess,"-n",ndx_path,"-o",ndx_path,"-quiet"],
                   cwd=build_dir, input_str="q\n")
     # Parse Protein group id from printed group table
     protein_id = None
