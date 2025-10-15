@@ -252,7 +252,7 @@ q
     else:
         info(f"Protein group id = {protein_id}")
         info("STEP B2: create complement → NonProtein")
-        run_cmd(["gmx","make_ndx","-s",npt_tpr_guess,"-n",ndx_path,"-o",ndx_path,"-quiet"],
+        run_cmd(["gmx","make_ndx","-f",npt_tpr_guess,"-n",ndx_path,"-o",ndx_path,"-quiet"],
                 cwd=build_dir, input_str=f"! {protein_id}\nq\n")
         # Rename last group to NonProtein
         block = last_group_block(ndx_path)
