@@ -1,6 +1,6 @@
 globals:
   dt_ps: 0.002
-  k_kj_mol_nm2: 100
+  k_kj_mol_nm2: 1000
   target_extension_nm: 6.0
   n_reps_default: 10
   pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20]
