@@ -229,43 +229,77 @@ fi
 
 # Write pull.mdp
 cat > pull.mdp <<MDP
+; ---------- pull.mdp (SMD) ----------
+;define                  = -DPOSRES_ANCHOR   ; (unused since posre is included unconditionally in topol.top)
+
 integrator              = md
 dt                      = ${dt_ps}
 nsteps                  = ${nsteps}
-nstxout-compressed      = 1000
-nstenergy               = 1000
-nstlog                  = 1000
-continuation            = no
+
+; ── Thermostat (two groups) ──
+tcoupl                  = V-rescale
+tc-grps                 = Protein NonProtein
+tau_t                   = 0.5   0.5
+ref_t                   = 303.15 303.15
+
+; ── Barostat (NVT for SMD) ──
+pcoupl                  = no
+; If you ever enable barostat, prefer light isotropic:
+;pcoupl                  = C-rescale
+;pcoupltype              = isotropic
+;tau_p                   = 2.0
+;ref_p                   = 1.0
+;compressibility         = 4.5e-5
+
+; ── Non-bonded ──
+cutoff-scheme           = Verlet
+coulombtype             = PME
+rcoulomb                = 1.2
+vdwtype                 = cutoff
+vdw-modifier            = Force-switch
+rlist                   = 1.2
+rvdw                    = 1.2
+rvdw-switch             = 1.0
+DispCorr                = no
+pbc                     = xyz
+
+; ── Constraints ──
 constraints             = h-bonds
-constraint_algorithm    = lincs
+constraint-algorithm    = lincs
 lincs_iter              = 1
 lincs_order             = 4
-tcoupl                  = v-rescale
-tc-grps                 = System
-tau_t                   = 1.0
-ref_t                   = 303
-pcoupl                  = Parrinello-Rahman
-pcoupltype              = isotropic
-tau_p                   = 5.0
-ref_p                   = 1.0
-compressibility         = 4.5e-5
 
+; ─────────────── Pull code ───────────────
 pull                    = yes
 pull-ncoords            = 1
 pull-ngroups            = 2
+
 pull-group1-name        = Anchor
 pull-group2-name        = Pulled
-pull-coord1-groups      = 1 2
+
 pull-coord1-type        = umbrella
 pull-coord1-geometry    = direction-periodic
 pull-coord1-vec         = ${vec}
+pull-coord1-groups      = 1 2
 pull-coord1-init        = ${absdx}
-pull-coord1-k           = ${k_kj}
 pull-coord1-rate        = ${speed_nm_per_ps}
+pull-coord1-k           = ${k_kj}
 pull-print-components   = yes
-pull-nstxout            = 100
-pull-nstfout            = 100
+
+; ── Outputs (compact, analysis-friendly) ──
+; No .trr (huge):
+nstxout                 = 0
+nstvout                 = 0
+nstfout                 = 0
+; Keep compressed coords (XTC) — every 2 ps at dt=0.002 & 1000:
+nstxout-compressed      = 1000
+; Energies/logs:
+nstenergy               = 500
+nstlog                  = 500
+nstcalcenergy           = 100
+; Pull outputs: use GROMACS defaults (typically 100) by omitting pull-nstxout/pull-nstfout
 MDP
+
 
 # Topology (prefer system master top)
 TOP_SRC="${ROOT}/systems/${system}/00_build/topol.top"
