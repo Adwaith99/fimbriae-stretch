@@ -42,6 +42,67 @@ if [[ ! -f "${anchor_itp}" ]]; then
   exit 2
 fi
 
+# Get anchor residue range from config (e.g., "135-150" or "140")
+anchor_res_range=$(python3 - <<PY
+import yaml
+cfg=yaml.safe_load(open("${ROOT}/config.yaml"))
+res=None
+for s in cfg["systems"]:
+    if s["name"]=="${system}":
+        for v in s.get("variants", []):
+            if v["id"]=="${variant}":
+                res=v["anchor"]["res"]
+                break
+print(res if res is not None else "")
+PY
+)
+if [[ -z "${anchor_res_range}" ]]; then
+  echo "[smd-runner] ERROR: anchor residue range not found in config for ${system}/${variant}" >&2
+  exit 2
+fi
+
+# Create a variant-specific posre file in the RUN dir from the anchor chain ITP
+POSRE_ITP="${run_root}/posre_anchor_${system}_${variant}_chain_${anchor_chain}_${anchor_res_range}.itp"
+python3 - <<PY
+import re, yaml
+itp_path = r"""${anchor_itp}"""
+out_path = r"""${POSRE_ITP}"""
+rng = r"""${anchor_res_range}"""
+k = float(${k_kj})
+# parse range "a-b" or "x"
+m=re.match(r'^\s*(\d+)\s*-\s*(\d+)\s*$', rng)
+if m:
+    lo,hi=sorted(map(int,m.groups()))
+else:
+    x=int(rng.strip()); lo=hi=x
+txt=open(itp_path).read()
+in_atoms=False; rows=[]
+for line in txt.splitlines():
+    s=line.strip()
+    if not s or s.startswith(";"):
+        continue
+    if s.startswith("["):
+        in_atoms = "atoms" in s
+        continue
+    if in_atoms:
+        parts=s.split()
+        if len(parts)>=6 and parts[0].isdigit() and parts[2].isdigit():
+            ai=int(parts[0]); resnr=int(parts[2])
+            if lo<=resnr<=hi:
+                rows.append(ai)
+if not rows:
+    raise SystemExit(f"[smd-runner] ERROR: no atoms in range {rng} in {itp_path}")
+with open(out_path,"w") as f:
+    f.write("[ position_restraints ]\n")
+    f.write("; ai  funct  fc_x   fc_y   fc_z\n")
+    for ai in rows:
+        f.write(f"{ai:6d}   1   {k:.3f}  {k:.3f}  {k:.3f}\n")
+print(f"[smd-runner] Wrote posre: {out_path} ({len(rows)} atoms; k={k:.3f})")
+PY
+
+
+
+
 # Resolve final_tpr/final_xtc relative to repo root if they are not absolute
 resolve_path() {
   case "$1" in
@@ -239,16 +300,54 @@ fi
 ffline=$(grep -oE '"[^"]+\.ff/forcefield\.itp"' "${BUILD_DIR}/topol.top" | head -n1 || true)
 echo "[smd-runner] topol includes FF: ${ffline:-<unknown>}"
 
-# Execute grompp from BUILD_DIR, but point it at the run-dir files for mdp/c/index/outputs
+# Create run-local topol.top with absolute includes + posre include just after the anchor chain itp
+BUILD_DIR="${ROOT}/systems/${system}/00_build"
+SRC_TOP="${BUILD_DIR}/topol.top"
+RUN_TOP="${run_root}/topol.top"
+
+python3 - <<'PY'
+import os, re, sys
+src_top = os.environ["SRC_TOP"]
+build_dir = os.environ["BUILD_DIR"]
+run_top = os.environ["RUN_TOP"]
+anchor_itp = os.environ["anchor_itp"]
+posre_itp  = os.environ["POSRE_ITP"]
+
+txt=open(src_top).read()
+lines=txt.splitlines()
+out=[]
+inserted=False
+# rewrite #include "X" → absolute path if X exists under BUILD_DIR
+for line in lines:
+    m=re.match(r'^\s*#\s*include\s+"([^"]+)"\s*$', line)
+    out.append(line) if not m else out.append(f'#include "{os.path.join(build_dir, m.group(1))}"' if os.path.isfile(os.path.join(build_dir, m.group(1))) else line)
+
+# insert posre include immediately after anchor chain itp include
+final=[]
+for i, line in enumerate(out):
+    final.append(line)
+    if (not inserted) and re.match(r'^\s*#\s*include\s+"{}"\s*$'.format(re.escape(os.path.basename(anchor_itp))), os.path.basename(line) if False else line):
+        final.append(f'#include "{posre_itp}"')
+        inserted=True
+if not inserted:
+    # as fallback, append with a warning
+    final.append(f'#include "{posre_itp}"')
+open(run_top,"w").write("\n".join(final)+"\n")
+print(f"[smd-runner] Wrote run-local topol: {run_top}")
+PY
+
+
+# Run grompp from BUILD_DIR (so forcefield folder resolves), but point to RUN files and RUN_TOP
 pushd "${BUILD_DIR}" >/dev/null
 gmx grompp \
   -f "${run_root}/pull.mdp" \
   -c "${run_root}/start.gro" \
   -r "${run_root}/start.gro" \
-  -p "topol.top" \
+  -p "${run_root}/topol.top" \
   -n "${run_root}/index.ndx" \
   -o "${run_root}/pull.tpr"
 popd >/dev/null
+
 
 
 
