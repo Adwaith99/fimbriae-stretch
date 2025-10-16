@@ -305,36 +305,60 @@ BUILD_DIR="${ROOT}/systems/${system}/00_build"
 SRC_TOP="${BUILD_DIR}/topol.top"
 RUN_TOP="${run_root}/topol.top"
 
-python3 - <<'PY'
-import os, re, sys
-src_top = os.environ["SRC_TOP"]
+# (Optional) show what FF the source top references
+ffdir_guess=$(grep -oE '"[^"]+\.ff/forcefield\.itp"' "${SRC_TOP}" | head -n1 || true)
+echo "[smd-runner] topol includes FF: ${ffdir_guess:-<unknown>}"
+
+SRC_TOP="${SRC_TOP}" BUILD_DIR="${BUILD_DIR}" RUN_TOP="${RUN_TOP}" ANCHOR_ITP="${anchor_itp}" POSRE_ITP="${POSRE_ITP}" python3 - <<'PY'
+import os, re
+
+src_top   = os.environ["SRC_TOP"]
 build_dir = os.environ["BUILD_DIR"]
-run_top = os.environ["RUN_TOP"]
-anchor_itp = os.environ["anchor_itp"]
-posre_itp  = os.environ["POSRE_ITP"]
+run_top   = os.environ["RUN_TOP"]
+anchor_itp= os.environ["ANCHOR_ITP"]
+posre_itp = os.environ["POSRE_ITP"]
 
-txt=open(src_top).read()
-lines=txt.splitlines()
-out=[]
-inserted=False
-# rewrite #include "X" → absolute path if X exists under BUILD_DIR
+anchor_base = os.path.basename(anchor_itp)
+
+# 1) Rewrite #include "X" → absolute path if X exists under BUILD_DIR
+txt   = open(src_top, "r").read()
+lines = txt.splitlines()
+rewritten = []
 for line in lines:
-    m=re.match(r'^\s*#\s*include\s+"([^"]+)"\s*$', line)
-    out.append(line) if not m else out.append(f'#include "{os.path.join(build_dir, m.group(1))}"' if os.path.isfile(os.path.join(build_dir, m.group(1))) else line)
+    m = re.match(r'^\s*#\s*include\s+"([^"]+)"\s*$', line)
+    if not m:
+        rewritten.append(line)
+        continue
+    inc = m.group(1)
+    candidate = os.path.join(build_dir, inc)
+    if os.path.isfile(candidate):
+        rewritten.append(f'#include "{candidate}"')
+    else:
+        # keep as-is if we can’t resolve under BUILD_DIR
+        rewritten.append(line)
 
-# insert posre include immediately after anchor chain itp include
-final=[]
-for i, line in enumerate(out):
-    final.append(line)
-    if (not inserted) and re.match(r'^\s*#\s*include\s+"{}"\s*$'.format(re.escape(os.path.basename(anchor_itp))), os.path.basename(line) if False else line):
-        final.append(f'#include "{posre_itp}"')
-        inserted=True
+# 2) Insert posre include immediately after the *anchor chain* include.
+#    Match by the BASENAME of the included file, so it works whether it’s relative or absolute.
+out = []
+inserted = False
+inc_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"\s*$')
+for line in rewritten:
+    out.append(line)
+    m = inc_re.match(line)
+    if (not inserted) and m:
+        inc_path = m.group(1)
+        if os.path.basename(inc_path) == anchor_base:
+            out.append(f'#include "{posre_itp}"')
+            inserted = True
+
 if not inserted:
-    # as fallback, append with a warning
-    final.append(f'#include "{posre_itp}"')
-open(run_top,"w").write("\n".join(final)+"\n")
+    # Fall back to appending (but it’s better if it goes after the anchor include)
+    out.append(f'#include "{posre_itp}"')
+
+open(run_top, "w").write("\n".join(out) + "\n")
 print(f"[smd-runner] Wrote run-local topol: {run_top}")
 PY
+
 
 
 # Run grompp from BUILD_DIR (so forcefield folder resolves), but point to RUN files and RUN_TOP
