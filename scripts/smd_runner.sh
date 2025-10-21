@@ -301,6 +301,7 @@ nstcalcenergy           = 100
 MDP
 
 
+
 # Topology (prefer system master top)
 TOP_SRC="${ROOT}/systems/${system}/00_build/topol.top"
 if [[ -f "${TOP_SRC}" ]]; then
