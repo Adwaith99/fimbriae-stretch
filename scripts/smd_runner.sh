@@ -409,11 +409,11 @@ nstxout                 = 0
 nstvout                 = 0
 nstfout                 = 0
 ; Keep compressed coords (XTC) — every 2 ps at dt=0.002 & 1000:
-nstxout-compressed      = 1000
+nstxout-compressed      = 5000
 ; Energies/logs:
-nstenergy               = 500
-nstlog                  = 500
-nstcalcenergy           = 100
+nstenergy               = 5000
+nstlog                  = 5000
+nstcalcenergy           = 5000
 ; Pull outputs: use GROMACS defaults (typically 100) by omitting pull-nstxout/pull-nstfout
 MDP
 
