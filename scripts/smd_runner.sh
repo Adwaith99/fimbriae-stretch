@@ -273,6 +273,41 @@ PY
 )
 
 
+# --- Steps & rates (fixed decimals; robust) ---
+# rate (nm/ps) as fixed decimal
+rate_fmt=$(python3 - <<PY
+rate=float("${speed_nm_per_ns}")/1000.0
+print(f"{rate:.6f}")
+PY
+)
+
+# total pull time (ps) for target extension at this rate
+total_time_ps=$(python3 - <<PY
+import sys
+speed=float("${speed_nm_per_ns}")/1000.0
+if speed <= 0.0:
+    print("[smd-runner] ERROR: non-positive speed_nm_per_ns", file=sys.stderr); sys.exit(2)
+t_ns = float("${target_extension_nm}")/speed   # ns
+print(f"{t_ns*1000.0:.3f}")
+PY
+)
+
+# nsteps = ceil(total_time_ps / dt_ps)
+nsteps=$(python3 - <<PY
+import math
+dt=float("${dt_ps}")
+Tps=float("${total_time_ps}")
+if dt <= 0.0:
+    raise SystemExit("[smd-runner] ERROR: non-positive dt_ps")
+print(int(math.ceil(Tps/dt)))
+PY
+)
+
+# Defensive: ensure nsteps is a positive integer
+if ! [[ "${nsteps}" =~ ^[0-9]+$ ]] || [[ "${nsteps}" -le 0 ]]; then
+  echo "[smd-runner] ERROR: bad nsteps='${nsteps}' (dt_ps=${dt_ps}, total_time_ps=${total_time_ps})" >&2
+  exit 2
+fi
 
 
 # Write pull.mdp
@@ -347,6 +382,7 @@ nstlog                  = 500
 nstcalcenergy           = 100
 ; Pull outputs: use GROMACS defaults (typically 100) by omitting pull-nstxout/pull-nstfout
 MDP
+
 
 
 
