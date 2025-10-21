@@ -174,45 +174,86 @@ if ! grep -q "^\[ *Anchor *\]" index.ndx || ! grep -q "^\[ *Pulled *\]" index.nd
   exit 2
 fi
 
-# Compute COM(Anchor->Pulled) along x
-# Headerless numeric output (columns: time  x  y  z)
-gmx select -s start.gro -n index.ndx -select 'com of group "Anchor"'  -os com_anchor.xvg  -xvg none
-gmx select -s start.gro -n index.ndx -select 'com of group "Pulled"'  -os com_pulled.xvg  -xvg none
+# --- Compute pull-coord1-init from index.ndx + start.gro (no gmx select) ---
 
-# For a single-frame input, these files have exactly one numeric row; grab x (col 2)
-ax=$(awk 'NF>=4{print $2; exit}' com_anchor.xvg 2>/dev/null)
-px=$(awk 'NF>=4{print $2; exit}' com_pulled.xvg 2>/dev/null)
+read ax px dx <<EOF
+$(python3 - <<'PY'
+import re, sys
 
-if [[ -z "${ax}" || -z "${px}" ]]; then
-  echo "[smd-runner] ERROR: Failed to read COM x from com_*.xvg (got ax='${ax}', px='${px}')" >&2
+# 1) Collect atom indices for [ Anchor ] and [ Pulled ] from index.ndx
+idx = {"Anchor": set(), "Pulled": set()}
+cur = None
+with open("index.ndx") as f:
+    for line in f:
+        m = re.match(r"\s*\[\s*(.+?)\s*\]\s*$", line)
+        if m:
+            name = m.group(1).strip()
+            cur = name if name in idx else None
+            continue
+        if cur in idx:
+            for tok in line.split():
+                if tok.isdigit():
+                    idx[cur].add(int(tok))
+
+if not idx["Anchor"] or not idx["Pulled"]:
+    print("ERROR Missing/empty Anchor or Pulled in index.ndx", file=sys.stderr)
+    sys.exit(3)
+
+# 2) Parse start.gro and compute *geometric* center along X for both groups
+ax_sum = px_sum = 0.0
+ac = pc = 0
+with open("start.gro") as f:
+    header = f.readline()
+    try:
+        n = int(f.readline().strip())
+    except Exception:
+        print("ERROR Could not read atom count from start.gro", file=sys.stderr)
+        sys.exit(3)
+    # Atoms are lines 3..(n+2); GRO atom serials are 1..n and match these line indices.
+    for i in range(1, n+1):
+        s = f.readline()
+        if not s:
+            print("ERROR Unexpected EOF in start.gro", file=sys.stderr)
+            sys.exit(3)
+        # Robustly grab the X coord: last three whitespace fields are x y z (nm)
+        parts = s.split()
+        if len(parts) < 3:
+            print("ERROR Malformed atom line in start.gro", file=sys.stderr)
+            sys.exit(3)
+        try:
+            x = float(parts[-3])
+        except Exception:
+            # Fallback to fixed-width slice if needed
+            try:
+                x = float(s[20:28])
+            except Exception:
+                print("ERROR Could not parse X from start.gro", file=sys.stderr)
+                sys.exit(3)
+        if i in idx["Anchor"]:
+            ax_sum += x; ac += 1
+        if i in idx["Pulled"]:
+            px_sum += x; pc += 1
+
+if ac == 0 or pc == 0:
+    print("ERROR Zero atoms counted in Anchor/Pulled from start.gro", file=sys.stderr)
+    sys.exit(3)
+
+ax = ax_sum / ac
+px = px_sum / pc
+dx = px - ax
+print(f"{ax:.6f} {px:.6f} {dx:.6f}")
+PY
+)
+EOF
+
+if [[ -z "${dx}" ]]; then
+  echo "[smd-runner] ERROR: Failed to compute COM X from index.ndx + start.gro" >&2
   exit 2
 fi
 
-# Compute dx and |dx| with fixed 6-decimal formatting
-dx=$(awk -v ax="$ax" -v px="$px" 'BEGIN{printf "%.6f", (px-ax)}')
+# Absolute distance along x and sign (fixed decimals)
 absdx=$(awk -v v="$dx" 'BEGIN{if (v<0) v=-v; printf "%.6f", v}')
 
-# If nearly zero, warn (indices may be wrong)
-awk -v v="$absdx" 'BEGIN{if (v+0.0 < 1e-6) { print "[smd-runner] WARNING: pull-coord1-init ~ 0; check Anchor/Pulled groups" > "/dev/stderr"; }}'
-
-
-# nsteps from target extension and speed
-speed_nm_per_ps=$(python3 - <<PY
-print(float("${speed_nm_per_ns}")/1000.0)
-PY
-)
-rate_fmt=$(python3 - <<PY
-rate=float("${speed_nm_per_ns}")/1000.0
-print(f"{rate:.6f}")
-PY
-)
-nsteps=$(python3 - <<PY
-dt=float("${dt_ps}"); target=float("${target_ext_nm}"); rate=float("${speed_nm_per_ps}")
-print(int(round( (target / rate) / dt )))
-PY
-)
-
-# Choose vec sign so extension is positive with positive rate along x
 sign=$(python3 - <<PY
 dx=float("${dx}")
 print("neg" if dx < 0 else "pos")
@@ -223,6 +264,14 @@ if [[ "${sign}" == "neg" ]]; then
 else
   vec="1 0 0"
 fi
+
+# Nicely formatted pull rate (nm/ps)
+rate_fmt=$(python3 - <<PY
+rate=float("${speed_nm_per_ns}")/1000.0
+print(f"{rate:.6f}")
+PY
+)
+
 
 
 
