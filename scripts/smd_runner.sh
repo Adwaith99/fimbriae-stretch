@@ -175,37 +175,35 @@ if ! grep -q "^\[ *Anchor *\]" index.ndx || ! grep -q "^\[ *Pulled *\]" index.nd
 fi
 
 # Compute COM(Anchor->Pulled) along x
-# Write plain numeric output (no xvg headers/legends)
+# Headerless numeric output (columns: time  x  y  z)
 gmx select -s start.gro -n index.ndx -select 'com of group "Anchor"'  -os com_anchor.xvg  -xvg none
 gmx select -s start.gro -n index.ndx -select 'com of group "Pulled"'  -os com_pulled.xvg  -xvg none
 
+# For a single-frame input, these files have exactly one numeric row; grab x (col 2)
+ax=$(awk 'NF>=4{print $2; exit}' com_anchor.xvg 2>/dev/null)
+px=$(awk 'NF>=4{print $2; exit}' com_pulled.xvg 2>/dev/null)
 
-# Files now have numeric rows only; columns are: time  x  y  z
-ax=$(awk 'NF>=2{last=$2} END{print last}' com_anchor.xvg 2>/dev/null)
-px=$(awk 'NF>=2{last=$2} END{print last}' com_pulled.xvg 2>/dev/null)
-# Fallback if empty
-[[ -z "${ax}" ]] && ax="NaN"
-[[ -z "${px}" ]] && px="NaN"
-
-if [[ "${ax}" == "NaN" || "${px}" == "NaN" ]]; then
-  echo "[smd-runner] ERROR: Failed to parse COM x-coordinates." >&2
+if [[ -z "${ax}" || -z "${px}" ]]; then
+  echo "[smd-runner] ERROR: Failed to read COM x from com_*.xvg (got ax='${ax}', px='${px}')" >&2
   exit 2
 fi
 
-dx=$(python3 - <<PY
-ax=float("${ax}"); px=float("${px}")
-print(px-ax)
-PY
-)
-absdx=$(python3 - <<PY
-import math
-print(abs(float("${dx}")))
-PY
-)
+# Compute dx and |dx| with fixed 6-decimal formatting
+dx=$(awk -v ax="$ax" -v px="$px" 'BEGIN{printf "%.6f", (px-ax)}')
+absdx=$(awk -v v="$dx" 'BEGIN{if (v<0) v=-v; printf "%.6f", v}')
+
+# If nearly zero, warn (indices may be wrong)
+awk -v v="$absdx" 'BEGIN{if (v+0.0 < 1e-6) { print "[smd-runner] WARNING: pull-coord1-init ~ 0; check Anchor/Pulled groups" > "/dev/stderr"; }}'
+
 
 # nsteps from target extension and speed
 speed_nm_per_ps=$(python3 - <<PY
 print(float("${speed_nm_per_ns}")/1000.0)
+PY
+)
+rate_fmt=$(python3 - <<PY
+rate=float("${speed_nm_per_ns}")/1000.0
+print(f"{rate:.6f}")
 PY
 )
 nsteps=$(python3 - <<PY
@@ -225,6 +223,7 @@ if [[ "${sign}" == "neg" ]]; then
 else
   vec="1 0 0"
 fi
+
 
 
 # Write pull.mdp
@@ -282,7 +281,7 @@ pull-coord1-geometry    = direction-periodic
 pull-coord1-vec         = ${vec}
 pull-coord1-groups      = 1 2
 pull-coord1-init        = ${absdx}
-pull-coord1-rate        = ${speed_nm_per_ps}
+pull-coord1-rate        = ${rate_fmt}
 pull-coord1-k           = ${k_kj}
 pull-print-components   = yes
 
