@@ -4,8 +4,42 @@ set -euo pipefail
 # Input: one CSV line (no header)
 LINE="$1"
 
-# CSV → vars (ordered per FIELDNAMES in smd_build_manifest.py)
-IFS=',' read -r system variant replicate speed_nm_per_ns k_kj dt_ps target_ext_nm axis perf_ns_per_day start_time_ps final_tpr final_xtc start_id anchor_chain array_cap <<< "$LINE"
+# Parse one CSV line from manifests/smd_manifest.csv
+# Expected header order:
+# system,variant,replicate,speed_nm_per_ns,k_kj_mol_nm2,dt_ps,target_extension_nm,axis,perf_ns_per_day,start_time_ps,final_tpr,final_xtc,start_id,anchor_chain,array_cap
+IFS=',' read -r \
+  system \
+  variant \
+  replicate \
+  speed_nm_per_ns \
+  k_kj \
+  dt_ps \
+  target_extension_nm \
+  axis \
+  perf_ns_per_day \
+  start_time_ps \
+  final_tpr \
+  final_xtc \
+  start_id \
+  anchor_chain \
+  array_cap \
+  <<< "${LINE}"
+
+# Fail fast if any required fields are empty
+: "${system:?}"; : "${variant:?}"; : "${replicate:?}"
+: "${speed_nm_per_ns:?}"; : "${k_kj:?}"; : "${dt_ps:?}"
+: "${target_extension_nm:?}"; : "${axis:?}"; : "${start_time_ps:?}"
+: "${final_tpr:?}"; : "${final_xtc:?}"; : "${start_id:?}"; : "${anchor_chain:?}"
+
+# Normalize numeric formatting
+replicate=${replicate#\"}; replicate=${replicate%\"}
+speed_nm_per_ns=${speed_nm_per_ns#\"}; speed_nm_per_ns=${speed_nm_per_ns%\"}
+k_kj=${k_kj#\"}; k_kj=${k_kj%\"}
+dt_ps=${dt_ps#\"}; dt_ps=${dt_ps%\"}
+target_extension_nm=${target_extension_nm#\"}; target_extension_nm=${target_extension_nm%\"}
+start_time_ps=${start_time_ps#\"}; start_time_ps=${start_time_ps%\"}
+perf_ns_per_day=${perf_ns_per_day#\"}; perf_ns_per_day=${perf_ns_per_day%\"}
+array_cap=${array_cap#\"}; array_cap=${array_cap%\"}
 
 # Resolve repo root by crawling up to find config.yaml
 find_root() {
