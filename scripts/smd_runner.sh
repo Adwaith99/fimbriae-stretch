@@ -215,9 +215,11 @@ vec="1 0 0"
 
 # Base (positive) rate in nm/ps, fixed decimal
 base_rate=$(python3 - <<PY
-print(f"{float("${speed_nm_per_ns}")/1000.0:.6f}")
+rate = float("${speed_nm_per_ns}") / 1000.0
+print(f"{rate:.6f}")
 PY
 )
+
 
 # Minimal probe MDP (values mostly irrelevant; we only read grompp's printed start distance+sign)
 cat > pull_probe.mdp <<PROBE
