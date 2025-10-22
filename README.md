@@ -174,3 +174,159 @@ Upcoming features:
 
 If you use or adapt this pipeline for publications, please cite GROMACS and note this workflow as  
 “Automated staged equilibration and pulling simulation pipeline (fimbriae-stretch)”.
+
+
+
+# Fimbriae-Stretch SMD Pipeline
+
+Automated, reproducible workflow for pulling simulations of fimbrial proteins using **GROMACS 2024.4** on the **Trig HPC** cluster.
+
+---
+
+## ⚙️ Overview
+
+The repository automates both **equilibration (setup)** and **SMD pulling** stages.  
+Each pulling system is defined in `config.yaml` and expanded into manifest entries that are submitted as Slurm array jobs.
+
+### Workflow Structure
+
+fimbriae-stretch/
+├── config.yaml                     # All global + per-system settings
+├── manifests/
+│   ├── smd_manifest.csv            # auto-generated from config
+│   └── smd_submitted.csv           # ledger of already-submitted runs
+├── scripts/
+│   ├── smd_runner.sh               # core logic: prepare + grompp + mdrun
+│   ├── smd_job.sh                  # Slurm array entrypoint (runs 1 manifest line)
+│   ├── smd_submit_new.sh           # submits only NEW runs, grouped per speed
+│   ├── build_indices_and_posres.py # auto-creates [Anchor]/[Pulled] + posre
+│   └── gmx_bench.sh                # optional benchmark helper
+├── systems/                        # system-specific build dirs + topology
+│   └── fimA_WT/00_build/
+└── Makefile
+
+---
+
+## 🧩 Config Layout
+
+### `globals`
+Controls common parameters.
+
+```yaml
+globals:
+  dt_ps: 0.002
+  k_kj_mol_nm2: 100
+  target_extension_nm: 5.0
+  pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20]
+
+  slurm:
+    partition: compute_full_node
+    gpus_per_node: h100:4
+    cpus_per_task: 96
+    time_limit: "1-00:00:00"
+    array_cap: 5
+    gromacs_module: "StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
+
+  smd:
+    axis: x
+    anchor_chain_template: "systems/{system}/00_build/topol_chain_{chain}.itp"
+    mdrun:
+      ntmpi: 8
+      ntomp: 13
+      nb: gpu
+      bonded: gpu
+      pme: gpu
+      update: gpu
+      npme: 1
+      ntomp_pme: 5
+      # maxh auto-derived from Slurm --time
+```
+
+### `systems`
+Each system defines build parameters and pulling variants.
+
+```yaml
+systems:
+  - name: fimA_WT
+    pdb: "systems/fimA_WT/nfimA_5chains_beta_deleted.pdb"
+    box: [70, 15, 15]
+    anchor_molecule_itp: "systems/fimA_WT/00_build/topol_chain_D.itp"
+    perf_ns_per_day: 50
+
+    variants:
+      - id: AtoD
+        anchor: { chain: "D", res: "135-150" }
+        pulled: { chain: "A", res: "285-300" }
+        speeds: [0.02, 0.05, 0.10, 0.20, 0.5]
+        n_reps: 2
+```
+
+---
+
+## 🚀 Usage
+
+### 1. Prepare / regenerate the SMD manifest
+```bash
+make smd-manifest
+```
+Generates `manifests/smd_manifest.csv` with one row per (system × variant × speed × replicate).
+
+### 2. Test a single manifest line (no submission)
+```bash
+make smd-dry-run-one
+```
+
+### 3. Submit new jobs to Slurm
+```bash
+make smd-submit-new
+```
+
+### 4. Monitor jobs
+```bash
+squeue -u $USER -n smd
+tail -f logs/*_v*.out
+```
+
+### 5. Benchmarking (optional)
+```bash
+scripts/gmx_bench.sh -s smd/fimA_WT/AtoD/v0.020/rep1/s295/pull.tpr -c 96 -g 4 -n 20000 --ntmpi "4 8" --ntomp_pme "3 5"
+```
+
+---
+
+## 🧠 Internals
+
+| Script | Description |
+|--------|--------------|
+| `smd_runner.sh` | Creates start.gro, builds index/posre, computes signed distance, writes MDP + topology, runs GROMACS. |
+| `smd_job.sh` | Slurm job entry per manifest row. |
+| `smd_submit_new.sh` | Submits new jobs per (system,speed) only. |
+| `build_indices_and_posres.py` | Builds `[Anchor]/[Pulled]` and posres itp automatically. |
+
+---
+
+## 🧩 Outputs
+
+Each SMD replicate lives in:
+```
+smd/<system>/<variant>/v0.050/rep2/s123/
+```
+
+and contains:
+```
+start.gro
+pull.mdp
+topol.top
+posre_anchor_*.itp
+pull.tpr
+pull.log
+pull.xvg / pullf.xvg / pullx.xvg
+run.json
+```
+
+---
+
+## 🧩 License & Contact
+
+Maintained by **Adwaith B Uday**  
+Zeytuni Lab, Department of Biochemistry, McGill University
