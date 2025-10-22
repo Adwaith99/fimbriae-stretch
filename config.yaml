@@ -50,7 +50,8 @@ systems:
   - name: fimA_WT
     pdb: "systems/fimA_WT/nfimA_5chains_beta_deleted.pdb"
     box: [70, 15, 15]            # nm (for build)
-    perf_ns_per_day: 50          # system-specific pulling throughput (ns/day)
+    perf_ns_per_day: 80          # system-specific pulling throughput (ns/day)
+    SOL_index: 13
 
     variants:
       - id: AtoD
