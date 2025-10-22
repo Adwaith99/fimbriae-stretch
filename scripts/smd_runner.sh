@@ -306,23 +306,29 @@ echo "[smd-runner] grompp start distance (signed): ${init_signed} nm; pull rate:
 ############################
 # Steps based on magnitude only (uses base_rate)
 ############################
+# --- Steps based on target extension and speed (CORRECTED UNITS) ---
+# base_rate is nm/ps (we already divided by 1000 earlier)
 total_time_ps=$(python3 - <<PY
-speed=float("${base_rate}")     # nm/ps
-t_ns = float("${target_extension_nm}")/speed
-print("{:.3f}".format(t_ns*1000.0))
+speed_nm_per_ps=float("${base_rate}")   # nm/ps
+target_nm=float("${target_extension_nm}")
+t_ps = target_nm / speed_nm_per_ps      # (nm) / (nm/ps) = ps
+print("{:.3f}".format(t_ps))
 PY
 )
+
 nsteps=$(python3 - <<PY
 import math
-dt=float("${dt_ps}")
-Tps=float("${total_time_ps}")
-print(int(math.ceil(Tps/dt)))
+dt_ps=float("${dt_ps}")
+t_ps=float("${total_time_ps}")
+print(int(math.ceil(t_ps/dt_ps)))
 PY
 )
+
 if ! [[ "${nsteps}" =~ ^[0-9]+$ ]] || [[ "${nsteps}" -le 0 ]]; then
   echo "[smd-runner] ERROR: bad nsteps='${nsteps}' (dt_ps=${dt_ps}, total_time_ps=${total_time_ps})" >&2
   exit 2
 fi
+
 
 ############################
 # Final pull.mdp (Option B: ALL atoms, 10 ps stride)
