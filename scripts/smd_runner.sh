@@ -208,140 +208,105 @@ if ! grep -q "^\[ *Anchor *\]" index.ndx || ! grep -q "^\[ *Pulled *\]" index.nd
   exit 2
 fi
 
-# --- Compute pull-coord1-init from index.ndx + start.gro (no gmx select) ---
+# --- Use grompp to get BOTH sign and magnitude of the initial distance ---
 
-read ax px dx <<EOF
-$(python3 - <<'PY'
-import re, sys
+# We always pull along +x; the sign will be carried by the rate and init
+vec="1 0 0"
 
-# 1) Collect atom indices for [ Anchor ] and [ Pulled ] from index.ndx
-idx = {"Anchor": set(), "Pulled": set()}
-cur = None
-with open("index.ndx") as f:
-    for line in f:
-        m = re.match(r"\s*\[\s*(.+?)\s*\]\s*$", line)
-        if m:
-            name = m.group(1).strip()
-            cur = name if name in idx else None
-            continue
-        if cur in idx:
-            for tok in line.split():
-                if tok.isdigit():
-                    idx[cur].add(int(tok))
-
-if not idx["Anchor"] or not idx["Pulled"]:
-    print("ERROR Missing/empty Anchor or Pulled in index.ndx", file=sys.stderr)
-    sys.exit(3)
-
-# 2) Parse start.gro and compute *geometric* center along X for both groups
-ax_sum = px_sum = 0.0
-ac = pc = 0
-with open("start.gro") as f:
-    header = f.readline()
-    try:
-        n = int(f.readline().strip())
-    except Exception:
-        print("ERROR Could not read atom count from start.gro", file=sys.stderr)
-        sys.exit(3)
-    # Atoms are lines 3..(n+2); GRO atom serials are 1..n and match these line indices.
-    for i in range(1, n+1):
-        s = f.readline()
-        if not s:
-            print("ERROR Unexpected EOF in start.gro", file=sys.stderr)
-            sys.exit(3)
-        # Robustly grab the X coord: last three whitespace fields are x y z (nm)
-        parts = s.split()
-        if len(parts) < 3:
-            print("ERROR Malformed atom line in start.gro", file=sys.stderr)
-            sys.exit(3)
-        try:
-            x = float(parts[-3])
-        except Exception:
-            # Fallback to fixed-width slice if needed
-            try:
-                x = float(s[20:28])
-            except Exception:
-                print("ERROR Could not parse X from start.gro", file=sys.stderr)
-                sys.exit(3)
-        if i in idx["Anchor"]:
-            ax_sum += x; ac += 1
-        if i in idx["Pulled"]:
-            px_sum += x; pc += 1
-
-if ac == 0 or pc == 0:
-    print("ERROR Zero atoms counted in Anchor/Pulled from start.gro", file=sys.stderr)
-    sys.exit(3)
-
-ax = ax_sum / ac
-px = px_sum / pc
-dx = px - ax
-print(f"{ax:.6f} {px:.6f} {dx:.6f}")
+# Base (positive) rate in nm/ps, fixed decimal
+base_rate=$(python3 - <<PY
+print(f"{float("${speed_nm_per_ns}")/1000.0:.6f}")
 PY
 )
-EOF
 
-if [[ -z "${dx}" ]]; then
-  echo "[smd-runner] ERROR: Failed to compute COM X from index.ndx + start.gro" >&2
+# Minimal probe MDP (values mostly irrelevant; we only read grompp's printed start distance+sign)
+cat > pull_probe.mdp <<PROBE
+integrator              = md
+dt                      = ${dt_ps}
+nsteps                  = 10
+tcoupl                  = no
+pcoupl                  = no
+cutoff-scheme           = Verlet
+coulombtype             = PME
+rcoulomb                = 1.2
+vdwtype                 = cutoff
+vdw-modifier            = Force-switch
+rlist                   = 1.2
+rvdw                    = 1.2
+rvdw-switch             = 1.0
+pbc                     = xyz
+constraints             = h-bonds
+constraint-algorithm    = lincs
+
+pull                    = yes
+pull-ncoords            = 1
+pull-ngroups            = 2
+pull-group1-name        = Anchor
+pull-group2-name        = Pulled
+pull-coord1-type        = umbrella
+pull-coord1-geometry    = direction-periodic
+pull-coord1-vec         = ${vec}
+pull-coord1-groups      = 1 2
+pull-coord1-init        = 0.000000
+pull-coord1-rate        = ${base_rate}
+PROBE
+
+# Run probe grompp from BUILD_DIR (so includes resolve); capture output
+pushd "${BUILD_DIR}" >/dev/null
+gmx grompp \
+  -f "${run_root}/pull_probe.mdp" \
+  -c "${run_root}/start.gro" \
+  -r "${run_root}/start.gro" \
+  -p "${run_root}/topol.top" \
+  -n "${run_root}/index.ndx" \
+  -o "${run_root}/probe.tpr" \
+  2>&1 | tee "${run_root}/probe.grompp.log"
+popd >/dev/null
+
+# Extract the SIGNED "distance at start" that grompp prints for group 2
+signed_init=$(awk '/^ *2[[:space:]]/{for(i=1;i<=NF;i++){if($i=="nm"){print $(i-1); exit}}}' "${run_root}/probe.grompp.log")
+if [[ -z "${signed_init}" ]]; then
+  # Fallback: first line containing 'distance at start'
+  signed_init=$(awk '/distance at start/{for(i=1;i<=NF;i++){if($i=="nm"){print $(i-1); exit}}}' "${run_root}/probe.grompp.log")
+fi
+if [[ -z "${signed_init}" ]]; then
+  echo "[smd-runner] ERROR: could not extract signed start distance from probe.grompp.log" >&2
   exit 2
 fi
 
-# Absolute distance along x and sign (fixed decimals)
-absdx=$(awk -v v="$dx" 'BEGIN{if (v<0) v=-v; printf "%.6f", v}')
-
-sign=$(python3 - <<PY
-dx=float("${dx}")
-print("neg" if dx < 0 else "pos")
+# Format init with fixed decimals; compute signed rate with the SAME sign as init
+init_signed=$(python3 - <<PY
+v=float("${signed_init}")
+print(f"{v:.6f}")
 PY
 )
-if [[ "${sign}" == "neg" ]]; then
-  vec="-1 0 0"
-else
-  vec="1 0 0"
-fi
-
-# Nicely formatted pull rate (nm/ps)
-rate_fmt=$(python3 - <<PY
-rate=float("${speed_nm_per_ns}")/1000.0
-print(f"{rate:.6f}")
+rate_signed=$(python3 - <<PY
+base=float("${base_rate}")
+v=float("${signed_init}")
+print(f"{(-base if v<0.0 else base):.6f}")
 PY
 )
+echo "[smd-runner] grompp start distance (signed): ${init_signed} nm; pull rate: ${rate_signed} nm/ps"
 
-
-# --- Steps & rates (fixed decimals; robust) ---
-# rate (nm/ps) as fixed decimal
-rate_fmt=$(python3 - <<PY
-rate=float("${speed_nm_per_ns}")/1000.0
-print(f"{rate:.6f}")
-PY
-)
-
-# total pull time (ps) for target extension at this rate
+# Steps & walltime math uses the magnitude only (base_rate, not the signed one)
 total_time_ps=$(python3 - <<PY
-import sys
-speed=float("${speed_nm_per_ns}")/1000.0
-if speed <= 0.0:
-    print("[smd-runner] ERROR: non-positive speed_nm_per_ns", file=sys.stderr); sys.exit(2)
-t_ns = float("${target_extension_nm}")/speed   # ns
+speed=float("${base_rate}")
+t_ns = float("${target_extension_nm}")/speed
 print(f"{t_ns*1000.0:.3f}")
 PY
 )
-
-# nsteps = ceil(total_time_ps / dt_ps)
 nsteps=$(python3 - <<PY
 import math
 dt=float("${dt_ps}")
 Tps=float("${total_time_ps}")
-if dt <= 0.0:
-    raise SystemExit("[smd-runner] ERROR: non-positive dt_ps")
 print(int(math.ceil(Tps/dt)))
 PY
 )
-
-# Defensive: ensure nsteps is a positive integer
 if ! [[ "${nsteps}" =~ ^[0-9]+$ ]] || [[ "${nsteps}" -le 0 ]]; then
   echo "[smd-runner] ERROR: bad nsteps='${nsteps}' (dt_ps=${dt_ps}, total_time_ps=${total_time_ps})" >&2
   exit 2
 fi
+
 
 
 # Write pull.mdp
@@ -396,10 +361,10 @@ pull-group2-name        = Pulled
 
 pull-coord1-type        = umbrella
 pull-coord1-geometry    = direction-periodic
-pull-coord1-vec         = ${vec}
+pull-coord1-vec         = ${vec}          ; always 1 0 0
 pull-coord1-groups      = 1 2
-pull-coord1-init        = ${absdx}
-pull-coord1-rate        = ${rate_fmt}
+pull-coord1-init        = ${init_signed}  ; signed, from grompp
+pull-coord1-rate        = ${rate_signed}  ; signed, same sign as init
 pull-coord1-k           = ${k_kj}
 pull-print-components   = yes
 
