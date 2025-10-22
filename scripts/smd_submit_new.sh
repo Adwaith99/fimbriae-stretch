@@ -42,23 +42,48 @@ awk -F, 'NR>1{
 
 # Group NEW rows by (system, speed)
 declare -A grp_idxs grp_time grp_cap
+BAD=0
 while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
   KEY="$SYS,$VAR,$REP,$SPD,$START"
+
   # Skip if already submitted
   [[ -n "${submitted[$KEY]:-}" ]] && continue
-  # Skip if already finished
-  RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
-  if [[ -f "${RUN}/pull.xtc" || -f "${RUN}/pull.log" ]]; then
-    echo "$KEY" >> "${LEDGER}"
+
+  # Validate required numeric fields
+  if [[ -z "${SPD}" || -z "${TGT}" || -z "${PERF}" ]]; then
+    echo "[smd-submit-new] WARN: skipping manifest line ${L} (missing numeric: speed='${SPD}', target='${TGT}', perf='${PERF}')" >&2
+    BAD=$((BAD+1))
     continue
   fi
+
+  # Extra numeric sanity (non-positive perf or speed)
+  if ! python3 - <<PY >/dev/null 2>&1
+spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}")
+assert spd>0 and tgt>0 and perf>0
+PY
+  then
+    echo "[smd-submit-new] WARN: skipping manifest line ${L} (invalid numbers: speed=${SPD}, target=${TGT}, perf=${PERF})" >&2
+    BAD=$((BAD+1))
+    continue
+  fi
+
+  # Skip if already finished on disk
+  RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
+  if [[ -f "${RUN}/pull.xtc" || -f "${RUN}/pull.log" ]]; then
+    echo "[smd-submit-new] SKIP finished: ${RUN}" >&2
+    # Only append to ledger in real submissions (we’ll handle this below)
+    continue
+  fi
+
   GRP="${SYS}|${SPD}"
+  # Collect sparse array indices (CSV line numbers)
   grp_idxs[$GRP]="${grp_idxs[$GRP]:-}${grp_idxs[$GRP]:+,}${L}"
+
   # walltime hours per row = (target/speed)/perf * 24 * SAFETY
   ht=$(python3 - <<PY
 import math
 spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); pad=float("${SAFETY}")
-ns=tgt/spd; days=(ns/perf) if perf>0 else 1e6
+ns=tgt/spd; days=(ns/perf)
 print("{:.3f}".format(days*24*pad))
 PY
 )
@@ -68,48 +93,72 @@ a=float("${cur}"); b=float("${ht}")
 print("{:.3f}".format(max(a,b)))
 PY
 )
-  grp_cap[$GRP]="${CAP}"
+  grp_cap[$GRP]="${CAP:-5}"
 done < "${rows}"
 
-any=0
-for GRP in "${!grp_idxs[@]}"; do
-  IFS='|' read -r SYS SPD <<< "${GRP}"
-  IDXS="${grp_idxs[$GRP]}"
-  CAP="${grp_cap[$GRP]:-5}"
-  # Convert hours → HH:MM:SS (ceil to minutes)
-  TSTR=$(python3 - <<PY
+if [[ "${BAD}" -gt 0 ]]; then
+  echo "[smd-submit-new] NOTE: skipped ${BAD} invalid manifest row(s)." >&2
+fi
+
+
+# Group NEW rows by (system, speed)
+declare -A grp_idxs grp_time grp_cap
+BAD=0
+while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
+  KEY="$SYS,$VAR,$REP,$SPD,$START"
+
+  # Skip if already submitted
+  [[ -n "${submitted[$KEY]:-}" ]] && continue
+
+  # Validate required numeric fields
+  if [[ -z "${SPD}" || -z "${TGT}" || -z "${PERF}" ]]; then
+    echo "[smd-submit-new] WARN: skipping manifest line ${L} (missing numeric: speed='${SPD}', target='${TGT}', perf='${PERF}')" >&2
+    BAD=$((BAD+1))
+    continue
+  fi
+
+  # Extra numeric sanity (non-positive perf or speed)
+  if ! python3 - <<PY >/dev/null 2>&1
+spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}")
+assert spd>0 and tgt>0 and perf>0
+PY
+  then
+    echo "[smd-submit-new] WARN: skipping manifest line ${L} (invalid numbers: speed=${SPD}, target=${TGT}, perf=${PERF})" >&2
+    BAD=$((BAD+1))
+    continue
+  fi
+
+  # Skip if already finished on disk
+  RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
+  if [[ -f "${RUN}/pull.xtc" || -f "${RUN}/pull.log" ]]; then
+    echo "[smd-submit-new] SKIP finished: ${RUN}" >&2
+    # Only append to ledger in real submissions (we’ll handle this below)
+    continue
+  fi
+
+  GRP="${SYS}|${SPD}"
+  # Collect sparse array indices (CSV line numbers)
+  grp_idxs[$GRP]="${grp_idxs[$GRP]:-}${grp_idxs[$GRP]:+,}${L}"
+
+  # walltime hours per row = (target/speed)/perf * 24 * SAFETY
+  ht=$(python3 - <<PY
 import math
-h=float("${grp_time[$GRP]}")
-m=math.ceil(h*60)
-print(f"{m//60:02d}:{m%60:02d}:00")
+spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); pad=float("${SAFETY}")
+ns=tgt/spd; days=(ns/perf)
+print("{:.3f}".format(days*24*pad))
 PY
 )
-  JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
-  OUT="logs/${SYS}_v$(printf "%0.3f" "${SPD}")_%A_%a.out"
-  ERR="logs/${SYS}_v$(printf "%0.3f" "${SPD}")_%A_%a.err"
-  echo "[smd-submit-new] sbatch --job-name=${JNAME} --partition=${PART} --gpus-per-node=${GPUS} --cpus-per-task=${CPUS} --time=${TSTR} --array=${IDXS}%${CAP}"
+  cur="${grp_time[$GRP]:-0.0}"
+  grp_time[$GRP]=$(python3 - <<PY
+a=float("${cur}"); b=float("${ht}")
+print("{:.3f}".format(max(a,b)))
+PY
+)
+  grp_cap[$GRP]="${CAP:-5}"
+done < "${rows}"
 
-  JID=$(
-    sbatch --parsable \
-      --job-name="${JNAME}" \
-      --partition="${PART}" \
-      --gpus-per-node="${GPUS}" \
-      --cpus-per-task="${CPUS}" \
-      --time="${TSTR}" \
-      --array="${IDXS}%${CAP}" \
-      --output="${OUT}" \
-      --error="${ERR}" \
-      "${JOB_SCRIPT}" "${MANIFEST}"
-  )
-  echo "[smd-submit-new] submitted: ${JID}"
-
-  # Append submitted keys for this group to the ledger
-  pat="^($(echo "${IDXS}" | sed 's/,/|/g'))$"
-  awk -F $'\t' -v pat="${pat}" ' $1 ~ pat { printf "%s,%s,%s,%s,%s\n",$2,$3,$4,$5,$8 } ' "${rows}" >> "${LEDGER}"
-
-  any=1
-done
-
-if [[ "${any}" -eq 0 ]]; then
-  echo "[smd-submit-new] Nothing new to submit (ledger up to date)."
+if [[ "${BAD}" -gt 0 ]]; then
+  echo "[smd-submit-new] NOTE: skipped ${BAD} invalid manifest row(s)." >&2
+fi
+cho "[smd-submit-new] Nothing new to submit (ledger up to date)."
 fi
