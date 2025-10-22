@@ -383,7 +383,7 @@ nstfout                 = 0
 nstxout-compressed      = 5000
 nstenergy               = 5000
 nstlog                  = 5000
-nstcalcenergy           = 5000
+nstcalcenergy           = 100
 ; Pull traces: keep GROMACS defaults (~100 steps) by omitting pull-nstxout/pull-nstfout
 MDP
 
