@@ -115,3 +115,8 @@ indices-test:
 	echo "[indices-test] Running builder for $$sys $$var"; \
 	PYTHONUNBUFFERED=1 timeout 300s stdbuf -oL -eL python3 scripts/build_indices_and_posres.py $$sys $$var
 
+.PHONY: smd-submit-new
+smd-submit-new:  ## Submit only NEW SMD rows (grouped by system+speed; array-capped)
+	@./scripts/smd_submit_new.sh manifests/smd_manifest.csv
+
+

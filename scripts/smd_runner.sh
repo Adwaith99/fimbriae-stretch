@@ -406,8 +406,50 @@ if [[ "${DRY_RUN:-}" == "1" ]]; then
   exit 0
 fi
 
-# Production mdrun (single-rank launch here; Slurm script will map resources)
-gmx mdrun -deffnm pull -ntmpi 1
+# --- mdrun parameters from config + maxh from Slurm timelimit ---
+readarray -t MDR < <(python3 - <<'PY'
+import yaml
+cfg=yaml.safe_load(open("config.yaml"))
+m=cfg.get("globals",{}).get("smd",{}).get("mdrun",{})
+def g(k,default=""):
+    v=m.get(k,default)
+    return "" if v is None else str(v)
+print(g("ntmpi",""))       # 0
+print(g("ntomp",""))       # 1
+print(g("nb",""))          # 2
+print(g("bonded",""))      # 3
+print(g("pme",""))         # 4
+print(g("update",""))      # 5
+print(g("npme",""))        # 6
+print(g("ntomp_pme",""))   # 7
+PY
+)
+NTMPI="${MDR[0]}"; NTOMP="${MDR[1]}"; NB="${MDR[2]}"; BONDED="${MDR[3]}"; PME="${MDR[4]}"; UPDATE="${MDR[5]}"; NPME="${MDR[6]}"; NTOMP_PME="${MDR[7]}"
+
+# Build args list (skip empties)
+mdargs=( -deffnm pull )
+[[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
+[[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
+[[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
+[[ -n "${BONDED}"     ]] && mdargs+=( -bonded "${BONDED}" )
+[[ -n "${PME}"        ]] && mdargs+=( -pme "${PME}" )
+[[ -n "${UPDATE}"     ]] && mdargs+=( -update "${UPDATE}" )
+[[ -n "${NPME}"       ]] && mdargs+=( -npme "${NPME}" )
+[[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
+
+# -maxh from job script (computed from Slurm timelimit) with a small guard
+if [[ -n "${MAXH_HOURS:-}" ]]; then
+  mdargs+=( -maxh "${MAXH_HOURS}" )
+fi
+
+# Dry-run switch
+if [[ "${DRY_RUN:-}" == "1" ]]; then
+  echo "[smd-runner] DRY RUN: would run: gmx mdrun ${mdargs[*]}"
+  exit 0
+fi
+
+gmx mdrun "${mdargs[@]}"
+
 
 ############################
 # Minimal run.json (for auditing)

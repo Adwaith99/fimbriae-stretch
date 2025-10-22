@@ -1,16 +1,16 @@
 globals:
   dt_ps: 0.002
-  k_kj_mol_nm2: 1000
-  target_extension_nm: 6.0
+  k_kj_mol_nm2: 500
+  target_extension_nm: 5.0
   n_reps_default: 10
-  pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20]
+  pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20, 0.5]
 
   slurm:
-    partition: compute_full_node
-    gpus_per_node: 4
-    cpus_per_task: 96
+    partition: default
+    gpus_per_node: h100:4
+    cpus_per_task: 48
     time_limit: "1-00:00:00"
-    array_cap: 5
+    array_cap: 3
     gromacs_module: "StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
 
   # Position restraints used in build stages (scaled per stage)
@@ -27,13 +27,23 @@ globals:
     time_em: "00:30:00"
     time_nvt: "01:00:00"
     time_npt: "02:30:00"
-    time_npt_final: "24:00:00" # longer because it’s the production-like segment
+    time_npt_final: "30:00:00" # longer because it’s the production-like segment
 
   smd:
     axis: x
     # pattern to auto-detect anchor molecule ITP from chain:
     anchor_chain_template: "systems/{system}/00_build/topol_Protein_chain_{chain}.itp"
 
+    mdrun:
+      ntmpi: 8
+      ntomp: 6
+      nb: gpu
+      bonded: gpu
+      pme: gpu
+      update: gpu
+      npme: 1
+      ntomp_pme: 6
+      # maxh is computed from the Slurm time limit automatically
 
 
 systems:
@@ -47,4 +57,4 @@ systems:
         anchor: { chain: "D", res: "135-150" }
         pulled: { chain: "A", res: "285-300" }
         speeds: [0.02, 0.05, 0.10, 0.2, 0.5]   # variant-specific speeds
-        n_reps: 2        # variant-specific replicate count
+        n_reps: 10        # variant-specific replicate count
