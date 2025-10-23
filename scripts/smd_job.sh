@@ -34,14 +34,17 @@ if [[ -z "${LINE}" ]]; then
   exit 2
 fi
 
-# Compute -maxh from Slurm timelimit (optional, used by runner)
-if [[ -n "${SLURM_TIMELIMIT:-}" ]]; then
+# Prefer MAXH_HOURS exported by submitter; fall back to SLURM if present
+if [[ -n "${MAXH_HOURS:-}" ]]; then
+  echo "[smd-job] maxh=${MAXH_HOURS} (from submitter)"
+elif [[ -n "${SLURM_TIMELIMIT:-}" ]]; then
   export MAXH_HOURS="$(python3 - <<PY
 import os
 mins=float(os.environ["SLURM_TIMELIMIT"])
 print(f"{(mins/60.0)*0.95:.2f}")
 PY
 )"
+  echo "[smd-job] maxh=${MAXH_HOURS} (from SLURM_TIMELIMIT)"
 elif [[ -n "${SLURM_TIMELIMIT_STR:-}" ]]; then
   export MAXH_HOURS="$(python3 - <<PY
 import os
@@ -56,8 +59,11 @@ else:
 print(f"{hours*0.95:.2f}")
 PY
 )"
+  echo "[smd-job] maxh=${MAXH_HOURS} (from SLURM_TIMELIMIT_STR)"
+else
+  echo "[smd-job] maxh=unset (no export and no SLURM vars)"
 fi
-echo "[smd-job] maxh=${MAXH_HOURS:-unset}"
+
 
 # Launch the per-row runner
 bash "scripts/smd_runner.sh" "${LINE}"

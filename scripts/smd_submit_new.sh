@@ -122,17 +122,25 @@ m=math.ceil(h*60)
 print(f"{m//60:02d}:{m%60:02d}:00")
 PY
 )
-  # ---- NEW: resolve absolute paths & chdir to repo root ----
+  # ---- Resolve absolute paths & chdir to repo root ----
   MANIFEST_ABS="$(readlink -f "${MANIFEST}")"
-  JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   ROOT="$(dirname "${MANIFEST_ABS}")/.."
   ROOT="$(readlink -f "${ROOT}")"
   JOB_SCRIPT_ABS="$(readlink -f "${JOB_SCRIPT}")"
   mkdir -p "${ROOT}/logs"
 
+  # Compute maxh directly from the same hours used to build TSTR (keep 5% headroom)
+  MAXH=$(python3 - <<PY
+import math
+h=float("${grp_time[$GRP]}")   # hours
+print(f"{h*0.95:.2f}")
+PY
+)
+
+  JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   OUT="${ROOT}/logs/${SYS}_v$(printf "%0.3f" "${SPD}")_%A_%a.log"   # unified stdout+stderr
 
-  echo "[smd-submit-new] sbatch --chdir='${ROOT}' --job-name=${JNAME} --partition=${PART} --gpus-per-node=${GPUS} --cpus-per-task=${CPUS} --time=${TSTR} --array=${IDXS}%${CAP} --output='${OUT}' ${JOB_SCRIPT_ABS} ${MANIFEST_ABS}"
+  echo "[smd-submit-new] sbatch --chdir='${ROOT}' --job-name=${JNAME} --partition=${PART} --gpus-per-node=${GPUS} --cpus-per-task=${CPUS} --time=${TSTR} --array=${IDXS}%${CAP} --output='${OUT}' --export=ALL,MAXH_HOURS=${MAXH} ${JOB_SCRIPT_ABS} ${MANIFEST_ABS}"
 
   if [[ -n "${SLURM_TEST_ONLY:-}" ]]; then
     echo "[smd-submit-new] DRY-RUN: sbatch --test-only (no submission)"
@@ -151,9 +159,11 @@ PY
       --array="${IDXS}%${CAP}" \
       --output="${OUT}" \
       --error="${OUT}" \
+      --export="ALL,MAXH_HOURS=${MAXH}" \
       "${JOB_SCRIPT_ABS}" "${MANIFEST_ABS}"
   )
   echo "[smd-submit-new] submitted: ${JID}"
+
 
 
   # Append submitted keys for this group to the ledger (real submissions only)

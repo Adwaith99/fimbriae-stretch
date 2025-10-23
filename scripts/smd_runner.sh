@@ -433,7 +433,7 @@ PY
 NTMPI="${MDR[0]}"; NTOMP="${MDR[1]}"; NB="${MDR[2]}"; BONDED="${MDR[3]}"; PME="${MDR[4]}"; UPDATE="${MDR[5]}"; NPME="${MDR[6]}"; NTOMP_PME="${MDR[7]}"
 
 # Build args list (skip empties)
-mdargs=( -deffnm pull )
+mdargs=( -deffnm pull -v )
 [[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
 [[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
 [[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
@@ -443,10 +443,11 @@ mdargs=( -deffnm pull )
 [[ -n "${NPME}"       ]] && mdargs+=( -npme "${NPME}" )
 [[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
 
-# -maxh from job script (computed from Slurm timelimit) with a small guard
+# -maxh from job script (computed or exported by submitter) with a small guard
 if [[ -n "${MAXH_HOURS:-}" ]]; then
   mdargs+=( -maxh "${MAXH_HOURS}" )
 fi
+
 
 # Dry-run switch
 if [[ "${DRY_RUN:-}" == "1" ]]; then
