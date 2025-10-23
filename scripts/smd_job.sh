@@ -18,8 +18,19 @@ PY
 GMX_MOD="${CFG_LINES[0]}"
 if [[ -n "${GMX_MOD}" ]]; then
   module purge || true
+  # --- HPC arch + GPU-direct comms ---------------------------------
+  # Load AVX-512 tuning module (safe to ignore if unavailable)
+  module load arch/avx512 || true
   module load ${GMX_MOD}
 fi
+
+# Enable FPU↔GPU direct communications in GROMACS (CUDA-aware MPI path)
+export GMX_ENABLE_DIRECT_GPU_COMM=ON
+
+# Log what we actually have
+echo "[smd-job] GMX_ENABLE_DIRECT_GPU_COMM=${GMX_ENABLE_DIRECT_GPU_COMM}"
+module list 2>&1 | sed 's/^/[smd-job] module: /'
+
 
 # Skip header line if array index == 1
 if [[ "${SLURM_ARRAY_TASK_ID}" -eq 1 ]]; then
