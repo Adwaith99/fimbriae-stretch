@@ -1,69 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Slurm header intentionally minimal; flags come from sbatch CLI in the submitter ---
-# (We still allow logs to go where sbatch says)
+MANIFEST="${1:?Usage: smd_job.sh <ABS_PATH_TO_MANIFEST>}"
 
-MANIFEST="${1:-manifests/smd_manifest.csv}"
-
-# Change to repo root based on the manifest path
-# (manifest is <ROOT>/manifests/smd_manifest.csv)
-ROOT="$(python3 - <<'PY'
-import os, sys
-p = os.path.abspath(sys.argv[1])
-print(os.path.abspath(os.path.join(os.path.dirname(p), '..')))
-PY
-"${MANIFEST}")"
-cd "${ROOT}"
-echo "[smd-job] CWD set to ${ROOT}"
-
+# We are started in repo root because submitter used --chdir=<repo_root>
+ROOT="$(pwd)"
+echo "[smd-job] CWD=${ROOT}"
+echo "[smd-job] MANIFEST=${MANIFEST}"
 
 # Load modules per config.yaml
 readarray -t CFG_LINES < <(python3 - <<'PY'
 import yaml
 cfg = yaml.safe_load(open("config.yaml"))
-slurm = cfg["globals"]["slurm"]
-print(slurm.get("gromacs_module",""))
+print(cfg["globals"]["slurm"].get("gromacs_module",""))
 PY
 )
 GMX_MOD="${CFG_LINES[0]}"
 if [[ -n "${GMX_MOD}" ]]; then
-  module purge
+  module purge || true
   module load ${GMX_MOD}
 fi
 
-# Skip header (line 1)
+# Skip header line if array index == 1
 if [[ "${SLURM_ARRAY_TASK_ID}" -eq 1 ]]; then
   echo "[smd-job] Task ${SLURM_ARRAY_TASK_ID} is header; skipping."
   exit 0
 fi
 
-# Read the CSV line whose index equals SLURM_ARRAY_TASK_ID
+# Read the exact CSV line == SLURM_ARRAY_TASK_ID
 LINE="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "${MANIFEST}")"
 if [[ -z "${LINE}" ]]; then
   echo "[smd-job] No line for SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}" >&2
   exit 2
 fi
 
-# Compute mdrun -maxh from THIS job's time limit (leave headroom)
-# Prefer SLURM_TIMELIMIT (minutes) or SLURM_TIMELIMIT_STR (D-HH:MM:SS)
-MAXH_HOURS=""
+# Compute -maxh from Slurm timelimit (optional, used by runner)
 if [[ -n "${SLURM_TIMELIMIT:-}" ]]; then
-  # minutes → hours
-  MAXH_HOURS=$(python3 - <<PY
-import os, math
+  export MAXH_HOURS="$(python3 - <<PY
+import os
 mins=float(os.environ["SLURM_TIMELIMIT"])
-# keep 5% headroom, min 0.25h headroom
-hours = mins/60.0
-maxh = max(0.0, hours*0.95)
-print(f"{maxh:.2f}")
+print(f"{(mins/60.0)*0.95:.2f}")
 PY
-)
+)"
 elif [[ -n "${SLURM_TIMELIMIT_STR:-}" ]]; then
-  MAXH_HOURS=$(python3 - <<PY
+  export MAXH_HOURS="$(python3 - <<PY
 import os
 s=os.environ["SLURM_TIMELIMIT_STR"]
-# formats: "D-HH:MM:SS" or "HH:MM:SS"
 parts=s.split('-')
 if len(parts)==2:
   d=int(parts[0]); hh,mm,ss=map(int,parts[1].split(':'))
@@ -71,14 +53,11 @@ if len(parts)==2:
 else:
   hh,mm,ss=map(int,parts[0].split(':'))
   hours=hh+mm/60+ss/3600
-maxh=max(0.0, hours*0.95)
-print(f"{maxh:.2f}")
+print(f"{hours*0.95:.2f}")
 PY
-)
+)"
 fi
-export MAXH_HOURS
+echo "[smd-job] maxh=${MAXH_HOURS:-unset}"
 
-echo "[smd-job] Node=$(hostname)  Task=${SLURM_ARRAY_TASK_ID}  maxh=${MAXH_HOURS:-unset}"
-
-# Run the per-row driver
-bash "${ROOT}/scripts/smd_runner.sh" "${LINE}"
+# Launch the per-row runner
+bash "scripts/smd_runner.sh" "${LINE}"
