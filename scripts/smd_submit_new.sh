@@ -124,6 +124,7 @@ PY
 )
   # ---- NEW: resolve absolute paths & chdir to repo root ----
   MANIFEST_ABS="$(readlink -f "${MANIFEST}")"
+  JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   ROOT="$(dirname "${MANIFEST_ABS}")/.."
   ROOT="$(readlink -f "${ROOT}")"
   JOB_SCRIPT_ABS="$(readlink -f "${JOB_SCRIPT}")"
