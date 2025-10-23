@@ -82,7 +82,12 @@ trap 'echo "[TRACE] failed at line $LINENO with exit $?"' ERR
 
 # Be tolerant of sticky base modules
 module --force purge || true
+# Load AVX-512 tuning module (safe to ignore if unavailable)
+module load arch/avx512 || true
 module load ${GMX_MOD}
+
+# Enable FPU↔GPU direct communications in GROMACS (CUDA-aware MPI path)
+export GMX_ENABLE_DIRECT_GPU_COMM=ON
 
 echo "[ENV] module list:"
 module -t list || true
