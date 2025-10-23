@@ -117,6 +117,6 @@ indices-test:
 
 .PHONY: smd-submit-new
 smd-submit-new:  ## Submit only NEW SMD rows (grouped by system+speed; array-capped)
-	@./scripts/smd_submit_new.sh manifests/smd_manifest.csv
+	@bash scripts/smd_submit_new.sh manifests/smd_manifest.csv
 
 
