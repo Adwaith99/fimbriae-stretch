@@ -6,6 +6,18 @@ set -euo pipefail
 
 MANIFEST="${1:-manifests/smd_manifest.csv}"
 
+# Change to repo root based on the manifest path
+# (manifest is <ROOT>/manifests/smd_manifest.csv)
+ROOT="$(python3 - <<'PY'
+import os, sys
+p = os.path.abspath(sys.argv[1])
+print(os.path.abspath(os.path.join(os.path.dirname(p), '..')))
+PY
+"${MANIFEST}")"
+cd "${ROOT}"
+echo "[smd-job] CWD set to ${ROOT}"
+
+
 # Load modules per config.yaml
 readarray -t CFG_LINES < <(python3 - <<'PY'
 import yaml
@@ -69,4 +81,4 @@ export MAXH_HOURS
 echo "[smd-job] Node=$(hostname)  Task=${SLURM_ARRAY_TASK_ID}  maxh=${MAXH_HOURS:-unset}"
 
 # Run the per-row driver
-bash scripts/smd_runner.sh "${LINE}"
+bash "${ROOT}/scripts/smd_runner.sh" "${LINE}"

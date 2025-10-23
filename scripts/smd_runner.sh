@@ -413,9 +413,9 @@ if [[ "${DRY_RUN:-}" == "1" ]]; then
 fi
 
 # --- mdrun parameters from config + maxh from Slurm timelimit ---
-readarray -t MDR < <(python3 - <<'PY'
+readarray -t MDR < <(python3 - <<PY
 import yaml
-cfg=yaml.safe_load(open("config.yaml"))
+cfg=yaml.safe_load(open(r"${ROOT}/config.yaml"))
 m=cfg.get("globals",{}).get("smd",{}).get("mdrun",{})
 def g(k,default=""):
     v=m.get(k,default)
