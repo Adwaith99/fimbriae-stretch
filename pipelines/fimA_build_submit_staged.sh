@@ -113,6 +113,7 @@ echo "[ENV] gmx version:"; (gmx --version || true)
 # Run stage with full bash trace
 export PIPE_ROOT="$ROOT"
 cd "$ROOT"
+export CONFIG_YAML="$ROOT/config.yaml"
 echo "[RUN] calling equil_stage.sh for ${SYS} ${MODE} T=${TEMP} NSTEPS=${NSTEPS} FC=${FC} FINAL=${FINALFLAG}"
 bash -x "$ROOT/pipelines/equil_stage.sh" "$SYS" "$MODE" "$TEMP" "$NSTEPS" "$FC" "$FINALFLAG" "${BOX_X}" "${BOX_Y}" "${BOX_Z}"
 echo "[DONE] equil_stage.sh finished OK"

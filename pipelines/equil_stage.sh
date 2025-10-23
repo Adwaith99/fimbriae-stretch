@@ -10,6 +10,31 @@ BOX_X=${7:-}; BOX_Y=${8:-}; BOX_Z=${9:-}
 
 ROOT="$(cd "$(dirname "$0")/.."; pwd)"
 export PIPE_ROOT="$ROOT"
+
+# Resolve CONFIG_YAML early so it's always defined (even when clean.pdb exists)
+# Priority: env CONFIG_YAML > PIPE_ROOT/config.yaml > git root > repo parent
+CONFIG_YAML="${CONFIG_YAML:-}"
+if [[ -z "${CONFIG_YAML}" ]]; then
+  if [[ -f "$PIPE_ROOT/config.yaml" ]]; then
+    CONFIG_YAML="$PIPE_ROOT/config.yaml"
+  else
+    # try git root
+    git_root="$(git -C "$PIPE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$git_root" && -f "$git_root/config.yaml" ]]; then
+      CONFIG_YAML="$git_root/config.yaml"
+    else
+      # fallback: three levels up from systems/<SYS>/00_build
+      guess="$(realpath "$ROOT/config.yaml" 2>/dev/null || true)"
+      [[ -f "$guess" ]] && CONFIG_YAML="$guess" || true
+    fi
+  fi
+fi
+if [[ -z "${CONFIG_YAML}" || ! -f "$CONFIG_YAML" ]]; then
+  echo "[FATAL] config.yaml not found; tried: \$CONFIG_YAML='$CONFIG_YAML', \$PIPE_ROOT/config.yaml, git root." >&2
+  exit 2
+fi
+
+
 WD="$ROOT/systems/${SYS}/00_build"
 cd "$WD"
 
@@ -30,7 +55,7 @@ build_mdrun_flags() {
   _int_last(){ local n; n="$(echo "$1" | sed -E 's/.*[^0-9]([0-9]+)[^0-9]*$/\1/;t;d')"||true; [[ -z "$n" ]]&&echo 0||echo "$n"; }
   local RAW_GPUS="${SLURM_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-${SLURM_GPUS:-}}}"
   [[ -z "$RAW_GPUS" ]] && RAW_GPUS="$(python3 - <<'PY'
-import yaml, os; print(yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["slurm"]["gpus_per_node"])
+import yaml, os, sys; print(yaml.safe_load(open(os.environ["CONFIG_YAML"]))["globals"]["slurm"]["gpus_per_node"])
 PY
 )"
   local GPUS="$(_int_last "$RAW_GPUS")"; (( GPUS<1 )) && GPUS=1
@@ -48,7 +73,7 @@ PY
   if (( CPUS<1 )) && command -v getconf >/dev/null 2>&1; then CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"; fi
   if (( CPUS<1 )); then
     CPUS="$(python3 - <<'PY'
-import yaml, os; print(yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["slurm"]["cpus_per_task"])
+import yaml, os; print(yaml.safe_load(open(os.environ["CONFIG_YAML"]))["globals"]["slurm"]["cpus_per_task"])
 PY
 )"; CPUS="$(_int_last "$CPUS")"
   fi
@@ -66,16 +91,6 @@ if [[ ! -f clean.pdb ]]; then
   [[ -f input.pdb ]] || { echo "ERROR: input.pdb missing in $WD" >&2; exit 2; }
   gmx pdb2gmx -f input.pdb -o clean.pdb -p topol.top -ff ${FF} -water tip3p
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
-
-  # ---- locate config.yaml without relying on $ROOT ----
-  CONFIG_YAML="${CONFIG_YAML:-}"
-  if [[ -z "$CONFIG_YAML" ]]; then
-    # Try PIPE_ROOT, ROOT, repo root, or relative fallback from systems/<SYS>/00_build/
-    for base in "$PIPE_ROOT" "$ROOT" "$(git rev-parse --show-toplevel 2>/dev/null)" "$(realpath ../../..)"; do
-      [[ -n "$base" && -f "$base/config.yaml" ]] && CONFIG_YAML="$base/config.yaml" && break
-    done
-  fi
-  [[ -f "$CONFIG_YAML" ]] || { echo "ERROR: config.yaml not found" >&2; exit 2; }
 
   if [[ -z "$BOX_X" || -z "$BOX_Y" || -z "$BOX_Z" ]]; then
     read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - "$CONFIG_YAML" "$SYS" <<'PY'
