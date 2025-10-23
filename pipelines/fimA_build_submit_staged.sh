@@ -27,7 +27,7 @@ python3 - "$1" <<'PY'
 import sys, yaml
 fc=sys.argv[1]
 cfg=yaml.safe_load(open("config.yaml"))
-default={"1000":100.0,"500":200.0,"200":303.15,"100":303.15,"50":303.15}
+default={"1000":100.0,"500":150.0,"200":200,"100":250,"50":303.15}
 tmap=cfg.get("globals",{}).get("build",{}).get("temp_schedule_by_fc",default)
 print(tmap.get(str(fc), default.get(str(fc), 303.15)))
 PY
