@@ -66,16 +66,30 @@ if [[ ! -f clean.pdb ]]; then
   [[ -f input.pdb ]] || { echo "ERROR: input.pdb missing in $WD" >&2; exit 2; }
   gmx pdb2gmx -f input.pdb -o clean.pdb -p topol.top -ff ${FF} -water tip3p
   echo "1" | gmx editconf -f clean.pdb -o aligned.pdb -princ -center 0 0 0
+
+  # ---- locate config.yaml without relying on $ROOT ----
+  CONFIG_YAML="${CONFIG_YAML:-}"
+  if [[ -z "$CONFIG_YAML" ]]; then
+    # Try PIPE_ROOT, ROOT, repo root, or relative fallback from systems/<SYS>/00_build/
+    for base in "$PIPE_ROOT" "$ROOT" "$(git rev-parse --show-toplevel 2>/dev/null)" "$(realpath ../../..)"; do
+      [[ -n "$base" && -f "$base/config.yaml" ]] && CONFIG_YAML="$base/config.yaml" && break
+    done
+  fi
+  [[ -f "$CONFIG_YAML" ]] || { echo "ERROR: config.yaml not found" >&2; exit 2; }
+
   if [[ -z "$BOX_X" || -z "$BOX_Y" || -z "$BOX_Z" ]]; then
-    read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - <<PY
-import yaml, os
-s = next((x for x in yaml.safe_load(open(os.environ["ROOT"] + "/config.yaml"))["systems"]
-         if x["name"] == os.environ["SYS"]), None)
-print(*s["box"] if s and "box" in s else (10.0,10.0,10.0))
+    read -r BOX_X BOX_Y BOX_Z <<<"$(python3 - "$CONFIG_YAML" "$SYS" <<'PY'
+import sys, yaml
+cfg_path, sys_name = sys.argv[1], sys.argv[2]
+cfg = yaml.safe_load(open(cfg_path))
+s   = next((x for x in cfg.get("systems",[]) if x.get("name")==sys_name), {})
+print(*s.get("box",(10.0,10.0,10.0)))
 PY
 )"; fi
+
   gmx editconf -f aligned.pdb -o boxed.gro -c -box ${BOX_X} ${BOX_Y} ${BOX_Z} -bt triclinic
   gmx solvate -cp boxed.gro -cs spc216.gro -o solv.gro -p topol.top
+
   cat > ions.mdp <<'EOF'
 integrator=steep
 nsteps=2000
@@ -84,35 +98,41 @@ cutoff-scheme=Verlet
 rcoulomb=1.2
 rvdw=1.2
 EOF
+
   gmx grompp -f ions.mdp -c solv.gro -p topol.top -o ions.tpr
 
-  # ---- NEW: read SOL_index from config.yaml (per-system), default = 13 ----
-  SOLVENT_GROUP_INDEX="$(python3 - <<'PY'
-import yaml, os, sys
-cfg = yaml.safe_load(open(os.environ["ROOT"] + "/config.yaml"))
-sys_name = os.environ.get("SYS")
-sysrec = next((s for s in cfg.get("systems", []) if s.get("name")==sys_name), {})
-# primary key: systems[].SOL_index  (integer)
-val = sysrec.get("SOL_index", 13)
-# allow optional nested location if you later move it under prep.genion.solvent_group_index
-if not isinstance(val, int):
-    val = ((sysrec.get("prep", {}) or {}).get("genion", {}) or {}).get("solvent_group_index", 13)
-print(val if isinstance(val, int) else 13)
+  # ---- get SOL_index (default 13), also accept future nested prep.genion.solvent_group_index ----
+  SOLVENT_GROUP_INDEX="$(python3 - "$CONFIG_YAML" "$SYS" <<'PY'
+import sys, yaml
+cfg_path, sys_name = sys.argv[1], sys.argv[2]
+cfg = yaml.safe_load(open(cfg_path))
+sysrec = next((s for s in cfg.get("systems",[]) if s.get("name")==sys_name), {})
+
+def coerce_int(x, default=None):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+val = coerce_int(sysrec.get("SOL_index"), None)
+if val is None:
+    val = coerce_int(((sysrec.get("prep",{}) or {}).get("genion",{}) or {}).get("solvent_group_index"), None)
+print(val if val is not None else 13)
 PY
 )"
 
-  # tiny guard: ensure it's a positive integer
-  case "$SOLVENT_GROUP_INDEX" in
-    ''|*[!0-9]*)
-      echo "WARNING: SOL_index invalid ('$SOLVENT_GROUP_INDEX'); falling back to 13" >&2
-      SOLVENT_GROUP_INDEX=13
-      ;;
+  # guard against empty/non-numeric
+  case "$SOLVENT_GROUP_INDEX" in ''|*[!0-9]*)
+    echo "WARNING: invalid SOL_index='$SOLVENT_GROUP_INDEX'; falling back to 13" >&2
+    SOLVENT_GROUP_INDEX=13
   esac
 
-  printf "%s\n" "$SOLVENT_GROUP_INDEX" | gmx genion -s ions.tpr -o ions.gro -p topol.top \
+  printf "%s\n" "$SOLVENT_GROUP_INDEX" | gmx genion \
+    -s ions.tpr -o ions.gro -p topol.top \
     -pname NA -nname CL -conc 0.15 -neutral
 
-  python3 "$ROOT/scripts/patch_posre_macros.py"
+  python3 "$CONFIG_YAML" >/dev/null 2>&1 || true  # no-op; keeps shellcheck calm if you reference CONFIG_YAML later
+  python3 "$ROOT/scripts/patch_posre_macros.py" 2>/dev/null || python3 "$(dirname "$CONFIG_YAML")/scripts/patch_posre_macros.py"
 fi
 
 prev_conf="$(pick_prev_conf)"
@@ -120,11 +140,13 @@ prev_conf="$(pick_prev_conf)"
 # ---------- timestep selection ----------
 DT_PS=0.001
 if [[ "$FINAL" == "1" && "$MODE" == "npt" && "$FC" == "0" ]]; then
-  DT_PS=$(python3 - <<'PY'
-import yaml, os
-print(yaml.safe_load(open(os.environ["PIPE_ROOT"] + "/config.yaml"))["globals"]["dt_ps"])
+  DT_PS=$(python3 - "$CONFIG_YAML" <<'PY'
+import sys, yaml, os
+cfg = yaml.safe_load(open(sys.argv[1]))
+print(cfg["globals"]["dt_ps"])
 PY
-); fi
+  ); fi
+
 
 
 # ---------- write stage MDP ----------
