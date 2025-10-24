@@ -118,7 +118,7 @@ def main():
         if cand: npt_tpr = sorted(cand)[-1]
         else: die("npt_final.tpr not found under 00_build")
 
-    out = run_cmd(["gmx","make_ndx","-s",npt_tpr,"-n",ndx_path,"-o",ndx_path,"-quiet"], cwd=build_dir, input_str="q\n")
+    out = run_cmd(["gmx","make_ndx","-f",npt_tpr,"-n",ndx_path,"-o",ndx_path,"-quiet"], cwd=build_dir, input_str="q\n")
     prot_id=None
     for line in out.splitlines():
         m=re.match(r"^\s*(\d+)\s+Protein\b", line)
@@ -126,7 +126,7 @@ def main():
     if prot_id is None:
         info("WARNING: 'Protein' group not found; skipping NonProtein")
         info("DONE."); return
-    run_cmd(["gmx","make_ndx","-s",npt_tpr,"-n",ndx_path,"-o",ndx_path,"-quiet"], cwd=build_dir, input_str=f"! {prot_id}\nq\n")
+    run_cmd(["gmx","make_ndx","-f",npt_tpr,"-n",ndx_path,"-o",ndx_path,"-quiet"], cwd=build_dir, input_str=f"! {prot_id}\nq\n")
     # rename last block to NonProtein
     block = last_group_block(ndx_path)
     if block:
