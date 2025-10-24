@@ -11,7 +11,7 @@ globals:
     cpus_per_task: 48
     time_limit: "1-00:00:00"
     array_cap: 3
-    gromacs_module: "StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
+    gromacs_module: "arch/avx512 StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
 
   # Position restraints used in build stages (scaled per stage)
   posre:
@@ -19,15 +19,15 @@ globals:
 
   # >>> NEW: equilibrium MD settings for the final NPT stage
   equilibrium_md:
-    length_ns: 50.0           # total length of the final NPT segment (production-like)
-    warmup_ns: 10            # discard this from the beginning when sampling
+    length_ns: 10          # total length of the final NPT segment (production-like)
+    warmup_ns: 2            # discard this from the beginning when sampling
     sample_every_ps: 100.00    # spacing between sampled frames (for starts)
     xtc_write_ps: 20.0        # write frequency for final NPT XTC (must divide sample_every_ps)
     # Slurm walltimes per stage (tight requests)
     time_em: "00:30:00"
     time_nvt: "01:00:00"
     time_npt: "02:30:00"
-    time_npt_final: "30:00:00" # longer because it’s the production-like segment
+    time_npt_final: "12:00:00" # longer because it’s the production-like segment
 
   smd:
     axis: x

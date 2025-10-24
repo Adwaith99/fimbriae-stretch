@@ -18,9 +18,6 @@ PY
 GMX_MOD="${CFG_LINES[0]}"
 if [[ -n "${GMX_MOD}" ]]; then
   module purge || true
-  # --- HPC arch + GPU-direct comms ---------------------------------
-  # Load AVX-512 tuning module (safe to ignore if unavailable)
-  module load arch/avx512 || true
   module load ${GMX_MOD}
 fi
 
