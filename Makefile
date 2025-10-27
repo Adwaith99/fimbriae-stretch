@@ -16,6 +16,14 @@ help:
 	@echo "  cancel A=ID          - cancel a Slurm job/array"
 	@echo "  reset SYS=...        - wipe manifests + build outputs for one system"
 	@echo "  reset-all            - wipe manifests + build outputs for all systems"
+	@echo "  smd-submit           - submit SMD arrays (GPU mode, default)"
+	@echo "  smd-submit-cpu       - submit SMD arrays (CPU mode)"
+	@echo "  smd-submit-new       - submit only NEW SMD rows (GPU mode)"
+	@echo "  smd-submit-new-cpu   - submit only NEW SMD rows (CPU mode)"
+	@echo "  smd-clean-ledger     - remove completed runs from smd_submitted.csv"
+	@echo ""
+	@echo "Note: smd-submit-new ignores the ledger by default (only skips completed runs)."
+	@echo "      Cancel running jobs manually before resubmitting (e.g., scancel <jobid>)."
 
 pull:
 	git pull --rebase
@@ -79,7 +87,7 @@ reset-all:
 analyze-eq:
 	bash pipelines/analyze_eq.sh $(SYS)
 
-.PHONY: posteq-sample smd-manifest smd-submit smd-qc
+.PHONY: posteq-sample smd-manifest smd-submit smd-submit-cpu smd-qc
 
 # 1) Sample start frames from final NPT (per system/variant), random picks per variant
 posteq-sample:
@@ -92,6 +100,10 @@ smd-manifest:
 # 3) Submit one Slurm array per system (capped by globals.slurm.array_cap), no requeue
 smd-submit: smd-manifest
 	@bash pipelines/smd_array_submit.sh
+
+# 3b) Submit one Slurm array per system (CPU mode)
+smd-submit-cpu: smd-manifest
+	@CPU=1 bash pipelines/smd_array_submit.sh
 
 # 4) Optional QC pass over completed runs (TSV and PNG if enabled)
 smd-qc:
@@ -116,7 +128,15 @@ indices-test:
 	PYTHONUNBUFFERED=1 timeout 300s stdbuf -oL -eL python3 scripts/build_indices_and_posres.py $$sys $$var
 
 .PHONY: smd-submit-new
-smd-submit-new:  ## Submit only NEW SMD rows (grouped by system+speed; array-capped)
+smd-submit-new:  ## Submit only NEW SMD rows (grouped by system+speed; array-capped; GPU mode)
 	@bash scripts/smd_submit_new.sh manifests/smd_manifest.csv
+
+.PHONY: smd-submit-new-cpu
+smd-submit-new-cpu:  ## Submit only NEW SMD rows (CPU mode)
+	@CPU=1 bash scripts/smd_submit_new.sh manifests/smd_manifest.csv
+
+.PHONY: smd-clean-ledger
+smd-clean-ledger:  ## Remove completed runs from smd_submitted.csv ledger
+	@bash scripts/smd_clean_ledger.sh
 
 

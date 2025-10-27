@@ -449,13 +449,16 @@ if [[ -n "${MAXH_HOURS:-}" ]]; then
 fi
 
 
+# Decide mdrun command: CPU mode can export GMX_CMD="srun gmx_mpi mdrun -v -deffnm pull"
+GMX_CMD="${GMX_CMD:-gmx mdrun -v -deffnm pull}"
+
 # Dry-run switch
 if [[ "${DRY_RUN:-}" == "1" ]]; then
-  echo "[smd-runner] DRY RUN: would run: gmx mdrun ${mdargs[*]}"
+  echo "[smd-runner] DRY RUN: would run: ${GMX_CMD}"
   exit 0
 fi
 
-gmx mdrun "${mdargs[@]}"
+eval "${GMX_CMD}"
 
 
 ############################

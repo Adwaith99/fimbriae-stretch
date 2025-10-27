@@ -1,35 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Submit SMD runs that are NOT completed on disk.
+# Default behavior (USE_LEDGER=0): Only skips runs with "Finished mdrun" in pull.log
+# - Will resubmit incomplete/failed runs (even if in ledger)
+# - Will resubmit queued/running jobs (user must cancel manually first)
+# - Ledger is updated but not used to block submissions
+#
+# Alternative (USE_LEDGER=1): Also skip runs in smd_submitted.csv
+# - Prevents duplicate submissions if you trust the ledger
+# - export USE_LEDGER=1 before running to enable
+#
+# Typical workflow:
+# 1. scancel <jobid>  # Cancel unwanted GPU jobs
+# 2. make smd-submit-new-cpu  # Resubmit incomplete runs to CPU
+
 MANIFEST="${1:-manifests/smd_manifest.csv}"
-LEDGER="manifests/smd_submitted.csv"      # Keys of runs already submitted
+LEDGER="manifests/smd_submitted.csv"      # Tracks what was submitted (informational only)
 SAFETY="${SMD_TIME_SAFETY_FACTOR:-1.20}"  # walltime pad; override via env
 JOB_SCRIPT="${SMD_JOB_SCRIPT:-scripts/smd_job.sh}"
+USE_LEDGER="${USE_LEDGER:-0}"             # Set USE_LEDGER=1 to prevent resubmission of ledger entries
 
 [[ -f "${MANIFEST}" ]] || { echo "[smd-submit-new] ERROR: manifest not found: ${MANIFEST}" >&2; exit 2; }
 [[ -f "${JOB_SCRIPT}" ]] || { echo "[smd-submit-new] ERROR: job script not found: ${JOB_SCRIPT}" >&2; exit 2; }
 
-# Read Slurm defaults from config (partition, gpus, cpus)
+# Read Slurm defaults from config (partition, gpus, cpus, nodes, ntasks_per_node)
 readarray -t CFG < <(python3 - <<'PY'
 import yaml
 cfg=yaml.safe_load(open("config.yaml"))
 s=cfg["globals"]["slurm"]
-print(s["partition"])
-print(s["gpus_per_node"])
-print(s["cpus_per_task"])
+print(s.get("partition", "default"))
+print(s.get("gpus_per_node", ""))
+print(s.get("cpus_per_task", 8))
+print(s.get("nodes", 1))
+print(s.get("ntasks_per_node", 1))
+print(s.get("gromacs_module", ""))
 PY
 )
-PART="${CFG[0]}"; GPUS="${CFG[1]}"; CPUS="${CFG[2]}"
+PART="${CFG[0]}"
+GRES_SPEC="${CFG[1]}"
+CPUS="${CFG[2]}"
+NODES="${CFG[3]}"
+NTASKS_PER_NODE="${CFG[4]}"
+GMX_MOD="${CFG[5]}"
+
+# CPU mode toggle
+CPU_MODE="${CPU:-0}"
 
 mkdir -p logs manifests/tmp
 touch "${LEDGER}"
 
-# Build a ledger set
+# Build a ledger set (only used if USE_LEDGER=1)
 declare -A submitted
-while IFS=, read -r s v r sp sid || [[ -n "${s:-}" ]]; do
-  [[ -z "${s:-}" ]] && continue
-  submitted["$s,$v,$r,$sp,$sid"]=1
-done < "${LEDGER}"
+if [[ "${USE_LEDGER}" = "1" ]]; then
+  while IFS=, read -r s v r sp sid || [[ -n "${s:-}" ]]; do
+    [[ -z "${s:-}" ]] && continue
+    submitted["$s,$v,$r,$sp,$sid"]=1
+  done < "${LEDGER}"
+  echo "[smd-submit-new] Ledger blocking enabled (USE_LEDGER=1): will skip ${#submitted[@]} previously submitted runs."
+else
+  echo "[smd-submit-new] Ledger blocking disabled (default): only completed runs will be skipped."
+fi
 
 # Parse manifest rows to TSV (TAB-separated!)
 tmpdir=$(mktemp -d); trap 'rm -rf "${tmpdir}"' EXIT
@@ -49,8 +80,8 @@ while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
 
   KEY="$SYS,$VAR,$REP,$SPD,$START"
 
-  # Skip if already submitted
-  if [[ -n "${submitted[$KEY]:-}" ]]; then
+  # Skip if in ledger AND ledger blocking is enabled
+  if [[ "${USE_LEDGER}" = "1" && -n "${submitted[$KEY]:-}" ]]; then
     continue
   fi
 
@@ -72,12 +103,26 @@ PY
     continue
   fi
 
-  # Skip if already finished on disk
+  # Check if run is truly DONE on disk
   RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
-  if [[ -f "${RUN}/pull.xtc" || -f "${RUN}/pull.log" ]]; then
-    echo "[smd-submit-new] SKIP finished: ${RUN}" >&2
-    # do NOT mark in ledger on dry-run; the real submission loop handles ledger updates
+  IS_DONE=0
+  if [[ -f "${RUN}/pull.xtc" && -f "${RUN}/pull.log" ]]; then
+    if grep -q "Finished mdrun" "${RUN}/pull.log" 2>/dev/null; then
+      IS_DONE=1
+    fi
+  fi
+  
+  if [[ "${IS_DONE}" -eq 1 ]]; then
+    echo "[smd-submit-new] SKIP completed: ${RUN}" >&2
     continue
+  fi
+  
+  # Not completed = submit (even if in ledger or has partial files)
+  # User manages canceling active jobs manually before resubmitting
+  if [[ -f "${RUN}/pull.log" ]]; then
+    echo "[smd-submit-new] RESUBMIT incomplete/failed: ${RUN}" >&2
+  elif [[ -n "${submitted[$KEY]:-}" ]]; then
+    echo "[smd-submit-new] RESUBMIT (was in ledger but not done): ${RUN}" >&2
   fi
 
   GRP="${SYS}|${SPD}"
@@ -140,7 +185,29 @@ PY
   JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   OUT="${ROOT}/logs/${SYS}_v$(printf "%0.3f" "${SPD}")_%A_%a.log"   # unified stdout+stderr
 
-  echo "[smd-submit-new] sbatch --chdir='${ROOT}' --job-name=${JNAME} --partition=${PART} --gpus-per-node=${GPUS} --cpus-per-task=${CPUS} --time=${TSTR} --array=${IDXS}%${CAP} --output='${OUT}' --export=ALL,MAXH_HOURS=${MAXH} ${JOB_SCRIPT_ABS} ${MANIFEST_ABS}"
+  # Build sbatch args based on CPU/GPU mode
+  SBATCH_ARGS=(
+    --chdir="${ROOT}"
+    --job-name="${JNAME}"
+    --partition="${PART}"
+    --cpus-per-task="${CPUS}"
+    --time="${TSTR}"
+    --array="${IDXS}%${CAP}"
+    --output="${OUT}"
+    --error="${OUT}"
+  )
+  EXPORTS="ALL,MAXH_HOURS=${MAXH},GMX_MODULE=${GMX_MOD}"
+
+  if [[ "${CPU_MODE}" = "1" ]]; then
+    # CPU mode
+    SBATCH_ARGS+=(--nodes="${NODES}" --ntasks-per-node="${NTASKS_PER_NODE}")
+    EXPORTS="${EXPORTS},GMX_CMD=srun gmx_mpi mdrun -v -deffnm pull"
+    echo "[smd-submit-new] CPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} nodes=${NODES} ntasks/node=${NTASKS_PER_NODE}"
+  else
+    # GPU mode
+    [[ -n "${GRES_SPEC}" ]] && SBATCH_ARGS+=(--gres="gpu:${GRES_SPEC}")
+    echo "[smd-submit-new] GPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} gres=${GRES_SPEC}"
+  fi
 
   if [[ -n "${SLURM_TEST_ONLY:-}" ]]; then
     echo "[smd-submit-new] DRY-RUN: sbatch --test-only (no submission)"
@@ -150,16 +217,8 @@ PY
 
   JID=$(
     sbatch --parsable \
-      --chdir="${ROOT}" \
-      --job-name="${JNAME}" \
-      --partition="${PART}" \
-      --gpus-per-node="${GPUS}" \
-      --cpus-per-task="${CPUS}" \
-      --time="${TSTR}" \
-      --array="${IDXS}%${CAP}" \
-      --output="${OUT}" \
-      --error="${OUT}" \
-      --export="ALL,MAXH_HOURS=${MAXH}" \
+      "${SBATCH_ARGS[@]}" \
+      --export="${EXPORTS}" \
       "${JOB_SCRIPT_ABS}" "${MANIFEST_ABS}"
   )
   echo "[smd-submit-new] submitted: ${JID}"
