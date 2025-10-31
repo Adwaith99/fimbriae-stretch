@@ -438,26 +438,46 @@ PY
 )
 NTMPI="${MDR[0]}"; NTOMP="${MDR[1]}"; NB="${MDR[2]}"; BONDED="${MDR[3]}"; PME="${MDR[4]}"; UPDATE="${MDR[5]}"; NPME="${MDR[6]}"; NTOMP_PME="${MDR[7]}"
 
-# Build args list (runner supplies -v and -deffnm pull; submitters set only the base command)
+## Build args list (runner supplies -v and -deffnm pull; submitters set only the base command)
+# We'll decide CPU/GPU mode after determining GMX_CMD and then append flags accordingly.
+
+# Decide mdrun command: CPU mode can export GMX_CMD="srun gmx_mpi mdrun"
+# Default to standard gmx mdrun if not provided by submitter
+GMX_CMD="${GMX_CMD:-gmx mdrun}"
+
+# Determine mode from GMX_CMD
+CPU_MODE=0
+if [[ "${GMX_CMD}" == *"gmx_mpi mdrun"* ]]; then
+  CPU_MODE=1
+fi
+
+# Base mdargs
 mdargs=( -v -deffnm pull )
-[[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
-[[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
-[[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
-[[ -n "${BONDED}"     ]] && mdargs+=( -bonded "${BONDED}" )
-[[ -n "${PME}"        ]] && mdargs+=( -pme "${PME}" )
-[[ -n "${UPDATE}"     ]] && mdargs+=( -update "${UPDATE}" )
-[[ -n "${NPME}"       ]] && mdargs+=( -npme "${NPME}" )
-[[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
+
+if [[ ${CPU_MODE} -eq 1 ]]; then
+  echo "[smd-runner] Detected CPU mode (GMX_CMD contains gmx_mpi). Omitting -ntmpi/-ntomp and GPU offload flags."
+  # Optionally set OpenMP threads if not provided; align with Slurm cpus-per-task
+  if [[ -z "${OMP_NUM_THREADS:-}" && -n "${SLURM_CPUS_PER_TASK:-}" ]]; then
+    export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+    echo "[smd-runner] OMP_NUM_THREADS=${OMP_NUM_THREADS} (from SLURM_CPUS_PER_TASK)"
+  fi
+  # Do NOT append -ntmpi/-ntomp or any GPU offload flags in CPU mode
+else
+  # GPU/default mode: honor config flags
+  [[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
+  [[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
+  [[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
+  [[ -n "${BONDED}"     ]] && mdargs+=( -bonded "${BONDED}" )
+  [[ -n "${PME}"        ]] && mdargs+=( -pme "${PME}" )
+  [[ -n "${UPDATE}"     ]] && mdargs+=( -update "${UPDATE}" )
+  [[ -n "${NPME}"       ]] && mdargs+=( -npme "${NPME}" )
+  [[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
+fi
 
 # -maxh from job script (computed or exported by submitter) with a small guard
 if [[ -n "${MAXH_HOURS:-}" ]]; then
   mdargs+=( -maxh "${MAXH_HOURS}" )
 fi
-
-
-# Decide mdrun command: CPU mode can export GMX_CMD="srun gmx_mpi mdrun"
-# Default to standard gmx mdrun if not provided by submitter
-GMX_CMD="${GMX_CMD:-gmx mdrun}"
 
 # Dry-run switch
 if [[ "${DRY_RUN:-}" == "1" ]]; then
