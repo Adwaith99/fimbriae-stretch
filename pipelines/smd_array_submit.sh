@@ -88,7 +88,7 @@ for sys in "${SYSTEMS[@]}"; do
   if [ "$CPU_MODE" = "1" ]; then
     # CPU mode
     SBATCH_ARGS+=(--nodes="${NODES}" --ntasks-per-node="${NTASKS_PER_NODE}" --cpus-per-task="${CPUS}")
-    EXPORTS="${EXPORTS},GMX_CMD=srun gmx_mpi mdrun -v -deffnm pull"
+    EXPORTS="${EXPORTS},GMX_CMD=srun gmx_mpi mdrun"
     echo "[smd-submit] CPU submit sys=${sys} rows=${N} wall=${WALL} part=${PART} nodes=${NODES} ntasks/node=${NTASKS_PER_NODE} cpus/task=${CPUS}"
   else
     # GPU mode

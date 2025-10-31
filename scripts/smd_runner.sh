@@ -69,6 +69,12 @@ mkdir -p "${run_root}"
 cd "${run_root}"
 
 echo "[smd-runner] System=${system} Variant=${variant} Rep=${replicate} Speed=${speed_nm_per_ns} nm/ns Start=${start_time_ps} ps"
+if [[ -n "${GMX_MODULE:-}" ]]; then
+  echo "[smd-runner] GMX_MODULE=${GMX_MODULE}"
+fi
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  echo "[smd-runner] SLURM job: ${SLURM_JOB_ID} task=${SLURM_ARRAY_TASK_ID:-} cpus=${SLURM_CPUS_PER_TASK:-} gres=${SLURM_JOB_GRES:-}"
+fi
 
 # Resolve build dir once (FF/top live here)
 BUILD_DIR="${ROOT}/systems/${system}/00_build"
@@ -432,8 +438,8 @@ PY
 )
 NTMPI="${MDR[0]}"; NTOMP="${MDR[1]}"; NB="${MDR[2]}"; BONDED="${MDR[3]}"; PME="${MDR[4]}"; UPDATE="${MDR[5]}"; NPME="${MDR[6]}"; NTOMP_PME="${MDR[7]}"
 
-# Build args list (skip empties)
-mdargs=( -deffnm pull -v )
+# Build args list (runner supplies -v and -deffnm pull; submitters set only the base command)
+mdargs=( -v -deffnm pull )
 [[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
 [[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
 [[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
@@ -449,16 +455,25 @@ if [[ -n "${MAXH_HOURS:-}" ]]; then
 fi
 
 
-# Decide mdrun command: CPU mode can export GMX_CMD="srun gmx_mpi mdrun -v -deffnm pull"
-GMX_CMD="${GMX_CMD:-gmx mdrun -v -deffnm pull}"
+# Decide mdrun command: CPU mode can export GMX_CMD="srun gmx_mpi mdrun"
+# Default to standard gmx mdrun if not provided by submitter
+GMX_CMD="${GMX_CMD:-gmx mdrun}"
 
 # Dry-run switch
 if [[ "${DRY_RUN:-}" == "1" ]]; then
-  echo "[smd-runner] DRY RUN: would run: ${GMX_CMD}"
+  echo "[smd-runner] DRY RUN: would run: ${GMX_CMD} with args: ${mdargs[*]}"
   exit 0
 fi
 
-eval "${GMX_CMD}"
+# Log command for diagnostics
+echo "[smd-runner] Executing: ${GMX_CMD} ${mdargs[*]}"
+
+# Build command string with proper quoting and execute
+cmd="${GMX_CMD}"
+for a in "${mdargs[@]}"; do
+  cmd+=" "$(printf %q "$a")
+done
+eval "$cmd"
 
 
 ############################

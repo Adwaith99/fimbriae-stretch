@@ -201,7 +201,7 @@ PY
   if [[ "${CPU_MODE}" = "1" ]]; then
     # CPU mode
     SBATCH_ARGS+=(--nodes="${NODES}" --ntasks-per-node="${NTASKS_PER_NODE}")
-    EXPORTS="${EXPORTS},GMX_CMD=srun gmx_mpi mdrun -v -deffnm pull"
+    EXPORTS="${EXPORTS},GMX_CMD=srun gmx_mpi mdrun"
     echo "[smd-submit-new] CPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} nodes=${NODES} ntasks/node=${NTASKS_PER_NODE}"
   else
     # GPU mode
