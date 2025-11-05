@@ -94,27 +94,27 @@ start_id="$(stripq "${start_id}")"
 RUN_DIR="${ROOT}/smd/${system}/${variant}/v$(printf "%.3f" "${speed_nm_per_ns}")/rep${replicate}/${start_id}"
 
 # Check if simulation completed
-COMPLETE=$(python3 - <<'PY'
+COMPLETE=$(RUN_DIR="${RUN_DIR}" python3 - <<'PY'
 import re, os, sys
 
-run_dir = os.getenv("RUN_DIR")
+run_dir = os.environ["RUN_DIR"]
 log_file = f"{run_dir}/pull.log"
 expected_file = f"{run_dir}/expected_nsteps.txt"
 
 if not os.path.exists(log_file) or not os.path.exists(expected_file):
-    print("0")
-    sys.exit(0)
+  print("0")
+  sys.exit(0)
 
 expected_nsteps = int(open(expected_file).read().strip())
 
 # Parse pull.log for max step reached
 max_step = 0
 with open(log_file) as f:
-    for line in f:
-        # Match "Step 12345" or "Statistics over 12345 steps"
-        m = re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
-        if m:
-            max_step = max(max_step, int(m.group(1)))
+  for line in f:
+    # Match "Step 12345" or "Statistics over 12345 steps"
+    m = re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
+    if m:
+      max_step = max(max_step, int(m.group(1)))
 
 # Complete if we've done >= expected steps
 complete = max_step >= expected_nsteps
@@ -130,18 +130,72 @@ if [[ "${COMPLETE}" == "1" ]]; then
 elif [[ "${RESTART_COUNT}" -ge "${MAX_RESTARTS}" ]]; then
   echo "[smd-job] WARNING: Max restarts (${MAX_RESTARTS}) reached; not resubmitting" >&2
 else
-  echo "[smd-job] Simulation INCOMPLETE; resubmitting (restart ${RESTART_COUNT}/${MAX_RESTARTS})"
+  echo "[smd-job] Simulation INCOMPLETE; calculating remaining walltime and resubmitting (restart ${RESTART_COUNT}/${MAX_RESTARTS})"
   sleep 10
-  
-  # Build sbatch command with same parameters but as single job (no array)
+
+  # Compute remaining walltime from steps remaining, dt_ps and per-system perf from config
+  readarray -t REM <<EOFREM
+$(RUN_DIR="${RUN_DIR}" SYSTEM="${system}" DT_PS="${dt_ps}" python3 - <<'PY'
+import yaml, os, re, math
+
+run_dir = os.environ["RUN_DIR"]
+dt_ps = float(os.environ["DT_PS"])  # ps
+sysname = os.environ["SYSTEM"]
+
+log_file = f"{run_dir}/pull.log"
+expected_file = f"{run_dir}/expected_nsteps.txt"
+
+if not (os.path.exists(log_file) and os.path.exists(expected_file)):
+    # Fallback to 24h
+    print("24.0")
+    print("24:00:00")
+    raise SystemExit
+
+expected_nsteps = int(open(expected_file).read().strip())
+max_step = 0
+with open(log_file) as f:
+    for line in f:
+        m = re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
+        if m:
+            max_step = max(max_step, int(m.group(1)))
+
+remaining_steps = max(0, expected_nsteps - max_step)
+rem_ps = remaining_steps * dt_ps
+ns_rem = rem_ps / 1000.0
+
+cfg = yaml.safe_load(open("config.yaml"))
+g = cfg.get("globals", {})
+safety = float(g.get("walltime_safety", 1.20))
+max_hrs = float(g.get("max_wall_hours", 168))
+global_perf = float(g.get("perf_ns_per_day", 10.0))
+perf = global_perf
+for s in cfg.get("systems", []):
+    if s.get("name") == sysname:
+        perf = float(s.get("perf_ns_per_day", global_perf))
+        break
+if perf <= 0:
+    perf = global_perf
+
+h = (ns_rem / perf) * 24.0 * safety
+h = max(0.5, min(h, max_hrs))
+m = math.ceil(h * 60)
+tstr = f"{m//60:02d}:{m%60:02d}:00"
+print(f"{h:.3f}")
+print(tstr)
+PY)
+EOFREM
+
+  REM_HOURS="${REM[0]}"
+  TSTR="${REM[1]}"
+
+  # Build sbatch command with same parameters but as single job (no array), using remaining-time-aware walltime
   NEXT_RESTART=$((RESTART_COUNT + 1))
-  
-  # Inherit current job's parameters
+
   SBATCH_ARGS=(
     --chdir="${ROOT}"
     --job-name="${SLURM_JOB_NAME:-smd-restart}"
     --partition="${SLURM_JOB_PARTITION:-default}"
-    --time="${SLURM_JOB_TIME:-24:00:00}"
+    --time="${TSTR}"
     --output="${ROOT}/logs/restart_${system}_${variant}_v${speed_nm_per_ns}_rep${replicate}_${start_id}_%j.log"
     --error="${ROOT}/logs/restart_${system}_${variant}_v${speed_nm_per_ns}_rep${replicate}_${start_id}_%j.log"
   )
@@ -161,7 +215,8 @@ else
   fi
   
   # Export necessary variables
-  EXPORTS="ALL,RESTART_COUNT=${NEXT_RESTART},MAXH_HOURS=${MAXH_HOURS:-}"
+  # Pass MAXH_HOURS for runner (-maxh buffer is applied there)
+  EXPORTS="ALL,RESTART_COUNT=${NEXT_RESTART},MAXH_HOURS=${REM_HOURS}"
   [[ -n "${GMX_CMD:-}" ]] && EXPORTS="${EXPORTS},GMX_CMD=${GMX_CMD}"
   [[ -n "${GMX_MODULE:-}" ]] && EXPORTS="${EXPORTS},GMX_MODULE=${GMX_MODULE}"
   
