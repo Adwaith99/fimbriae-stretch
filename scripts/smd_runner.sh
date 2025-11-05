@@ -335,6 +335,10 @@ if ! [[ "${nsteps}" =~ ^[0-9]+$ ]] || [[ "${nsteps}" -le 0 ]]; then
   exit 2
 fi
 
+# Save expected nsteps for completion checking
+echo "${nsteps}" > expected_nsteps.txt
+echo "[smd-runner] Expected nsteps: ${nsteps} (saved to expected_nsteps.txt)"
+
 
 ############################
 # Final pull.mdp (Option B: ALL atoms, 10 ps stride)
@@ -454,6 +458,16 @@ fi
 # Base mdargs
 mdargs=( -v -deffnm pull )
 
+# Check for checkpoint (restart scenario)
+if [[ -f "pull.cpt" ]]; then
+  echo "[smd-runner] Found checkpoint pull.cpt; continuing from restart"
+  mdargs+=( -cpi pull.cpt )
+  # Mark this as a restart (increment counter)
+  RESTART_NUM="${RESTART_COUNT:-0}"
+  touch ".restart_${RESTART_NUM}"
+  echo "[smd-runner] Created restart marker: .restart_${RESTART_NUM}"
+fi
+
 if [[ ${CPU_MODE} -eq 1 ]]; then
   echo "[smd-runner] Detected CPU mode (GMX_CMD contains gmx_mpi). Omitting -ntmpi/-ntomp and GPU offload flags."
   # Optionally set OpenMP threads if not provided; align with Slurm cpus-per-task
@@ -474,9 +488,17 @@ else
   [[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
 fi
 
-# -maxh from job script (computed or exported by submitter) with a small guard
+# -maxh from job script (computed or exported by submitter) with a buffer for resubmission logic
 if [[ -n "${MAXH_HOURS:-}" ]]; then
-  mdargs+=( -maxh "${MAXH_HOURS}" )
+  # Subtract 10 min (0.167 hrs) to leave time for completion check and resubmit
+  MAXH_ADJUSTED=$(python3 - <<PY
+h=float("${MAXH_HOURS}")
+adjusted=max(0.5, h-0.167)
+print(f"{adjusted:.2f}")
+PY
+)
+  mdargs+=( -maxh "${MAXH_ADJUSTED}" )
+  echo "[smd-runner] Using -maxh ${MAXH_ADJUSTED} (original: ${MAXH_HOURS}, buffer: 10 min)"
 fi
 
 # Dry-run switch

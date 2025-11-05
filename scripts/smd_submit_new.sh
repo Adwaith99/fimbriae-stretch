@@ -24,17 +24,19 @@ USE_LEDGER="${USE_LEDGER:-0}"             # Set USE_LEDGER=1 to prevent resubmis
 [[ -f "${MANIFEST}" ]] || { echo "[smd-submit-new] ERROR: manifest not found: ${MANIFEST}" >&2; exit 2; }
 [[ -f "${JOB_SCRIPT}" ]] || { echo "[smd-submit-new] ERROR: job script not found: ${JOB_SCRIPT}" >&2; exit 2; }
 
-# Read Slurm defaults from config (partition, gpus, cpus, nodes, ntasks_per_node)
+# Read Slurm defaults from config (partition, gpus, cpus, nodes, ntasks_per_node, max_wall_hours)
 readarray -t CFG < <(python3 - <<'PY'
 import yaml
 cfg=yaml.safe_load(open("config.yaml"))
-s=cfg["globals"]["slurm"]
+g=cfg.get("globals",{})
+s=g.get("slurm",{})
 print(s.get("partition", "default"))
 print(s.get("gpus_per_node", ""))
 print(s.get("cpus_per_task", 8))
 print(s.get("nodes", 1))
 print(s.get("ntasks_per_node", 1))
 print(s.get("gromacs_module", ""))
+print(g.get("max_wall_hours", 168))
 PY
 )
 PART="${CFG[0]}"
@@ -43,6 +45,7 @@ CPUS="${CFG[2]}"
 NODES="${CFG[3]}"
 NTASKS_PER_NODE="${CFG[4]}"
 GMX_MOD="${CFG[5]}"
+MAX_WALL_HOURS="${CFG[6]}"
 
 # CPU mode toggle
 CPU_MODE="${CPU:-0}"
@@ -65,16 +68,34 @@ fi
 # Parse manifest rows to TSV (TAB-separated!)
 tmpdir=$(mktemp -d); trap 'rm -rf "${tmpdir}"' EXIT
 rows="${tmpdir}/rows.tsv"
-# lineno  system  variant  replicate  speed  perf  target  start_id  array_cap
+# lineno  system  variant  replicate  speed  target  start_id  array_cap
+# Note: we no longer extract perf from manifest (column 9); we'll look it up from config per system
 awk -F, -v OFS='\t' 'NR>1{
   gsub(/^"|"$/, "", $0);
-  print NR, $1, $2, $3, $4, $9, $7, $13, $15
+  print NR, $1, $2, $3, $4, $7, $13, $15
 }' "${MANIFEST}" > "${rows}"
+
+# Build a system -> perf lookup from config
+declare -A system_perf
+readarray -t PERF_MAP < <(python3 - <<'PY'
+import yaml
+cfg = yaml.safe_load(open("config.yaml"))
+global_perf = float(cfg.get("globals", {}).get("perf_ns_per_day", 10.0))
+for sys in cfg.get("systems", []):
+    name = sys.get("name")
+    perf = float(sys.get("perf_ns_per_day", global_perf))
+    print(f"{name}:{perf}")
+PY
+)
+for entry in "${PERF_MAP[@]}"; do
+  IFS=':' read -r sname sperf <<< "${entry}"
+  system_perf["${sname}"]="${sperf}"
+done
 
 # Group NEW rows by (system, speed)
 declare -A grp_idxs grp_time grp_cap
 BAD=0
-while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
+while IFS=$'\t' read -r L SYS VAR REP SPD TGT START CAP; do
   # Skip empty lines defensively
   [[ -z "${L}" ]] && continue
 
@@ -85,9 +106,12 @@ while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
     continue
   fi
 
+  # Lookup perf from config for this system
+  PERF="${system_perf[${SYS}]:-10.0}"
+
   # Validate required numeric fields
-  if [[ -z "${SPD}" || -z "${TGT}" || -z "${PERF}" ]]; then
-    echo "[smd-submit-new] WARN: skipping line ${L} (missing numeric: speed='${SPD}', target='${TGT}', perf='${PERF}')" >&2
+  if [[ -z "${SPD}" || -z "${TGT}" ]]; then
+    echo "[smd-submit-new] WARN: skipping line ${L} (missing numeric: speed='${SPD}', target='${TGT}')" >&2
     BAD=$((BAD+1))
     continue
   fi
@@ -133,12 +157,15 @@ PY
     grp_idxs[$GRP]="${L}"
   fi
 
-  # walltime hours per row = (target/speed)/perf * 24 * SAFETY
+  # walltime hours per row = (target/speed)/perf * 24 * SAFETY, capped at MAX_WALL_HOURS
   ht=$(python3 - <<PY
 import math
 spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); pad=float("${SAFETY}")
+max_hrs=float("${MAX_WALL_HOURS}")
 ns=tgt/spd; days=(ns/perf)
-print("{:.3f}".format(days*24*pad))
+h=days*24*pad
+h=max(1.0, min(h, max_hrs))
+print("{:.3f}".format(h))
 PY
 )
   cur="${grp_time[$GRP]:-0.0}"
