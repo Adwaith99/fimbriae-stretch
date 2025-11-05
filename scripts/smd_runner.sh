@@ -226,7 +226,7 @@ for line in lines:
         if os.path.isfile(root_cand):
             rewritten.append(f'#include "{os.path.abspath(root_cand)}"')
         else:
-            # Last resort: keep line but normalize leading ./ to help -I search paths
+            # Last resort: keep line but normalize leading ./ to avoid odd relative prefixes
             if inc.startswith("./"):
                 rewritten.append(f'#include "{inc_clean}"')
             else:
@@ -298,7 +298,6 @@ gmx grompp \
   -r "${run_root}/start.gro" \
   -p "${run_root}/topol.top" \
   -n "${run_root}/index.ndx" \
-  -I "${ROOT}" \
   -o "${run_root}/probe.tpr" \
   2>&1 | tee "${run_root}/probe.grompp.log"
 popd >/dev/null
@@ -429,7 +428,6 @@ gmx grompp \
   -r "${run_root}/start.gro" \
   -p "${run_root}/topol.top" \
   -n "${run_root}/index.ndx" \
-  -I "${ROOT}" \
   -o "${run_root}/pull.tpr"
 popd >/dev/null
 
