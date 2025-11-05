@@ -216,21 +216,21 @@ for line in lines:
         rewritten.append(line); continue
     inc = m.group(1)
     cand = os.path.join(build_dir, inc)
-  if os.path.isfile(cand):
-    # If the include exists in build_dir, make it absolute to avoid CWD sensitivity
-    rewritten.append(f'#include "{os.path.abspath(cand)}"')
-  else:
-    # Try resolving relative include against repo root
-    inc_clean = inc[2:] if inc.startswith("./") else inc
-    root_cand = os.path.join(root_dir, inc_clean)
-    if os.path.isfile(root_cand):
-      rewritten.append(f'#include "{os.path.abspath(root_cand)}"')
+    if os.path.isfile(cand):
+        # If the include exists in build_dir, make it absolute to avoid CWD sensitivity
+        rewritten.append(f'#include "{os.path.abspath(cand)}"')
     else:
-      # Last resort: keep line but normalize leading ./ to help -I search paths
-      if inc.startswith("./"):
-        rewritten.append(f'#include "{inc_clean}"')
-      else:
-        rewritten.append(line)
+        # Try resolving relative include against repo root
+        inc_clean = inc[2:] if inc.startswith("./") else inc
+        root_cand = os.path.join(root_dir, inc_clean)
+        if os.path.isfile(root_cand):
+            rewritten.append(f'#include "{os.path.abspath(root_cand)}"')
+        else:
+            # Last resort: keep line but normalize leading ./ to help -I search paths
+            if inc.startswith("./"):
+                rewritten.append(f'#include "{inc_clean}"')
+            else:
+                rewritten.append(line)
 
 out=[]; inserted=False
 for line in rewritten:
