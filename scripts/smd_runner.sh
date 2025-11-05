@@ -196,13 +196,14 @@ fi
 ############################
 SRC_TOP="${BUILD_DIR}/topol.top"
 RUN_TOP="${run_root}/topol.top"
-SRC_TOP="${SRC_TOP}" BUILD_DIR="${BUILD_DIR}" RUN_TOP="${RUN_TOP}" ANCHOR_ITP="${anchor_itp}" POSRE_ITP="${POSRE_ITP}" python3 - <<'PY'
+SRC_TOP="${SRC_TOP}" BUILD_DIR="${BUILD_DIR}" RUN_TOP="${RUN_TOP}" ANCHOR_ITP="${anchor_itp}" POSRE_ITP="${POSRE_ITP}" ROOT_DIR="${ROOT}" python3 - <<'PY'
 import os, re
 src_top   = os.environ["SRC_TOP"]
 build_dir = os.environ["BUILD_DIR"]
 run_top   = os.environ["RUN_TOP"]
 anchor_itp= os.environ["ANCHOR_ITP"]
 posre_itp = os.environ["POSRE_ITP"]
+root_dir  = os.environ["ROOT_DIR"]
 anchor_base = os.path.basename(anchor_itp)
 
 txt=open(src_top,"r").read()
@@ -219,13 +220,17 @@ for line in lines:
     # If the include exists in build_dir, make it absolute to avoid CWD sensitivity
     rewritten.append(f'#include "{os.path.abspath(cand)}"')
   else:
-    # If the include starts with "./" but does not exist locally, drop the leading "./"
-    # so that GROMACS can resolve it via GMXLIB (e.g., forcefield includes)
-    if inc.startswith("./"):
-      inc2 = inc[2:]
-      rewritten.append(f'#include "{inc2}"')
+    # Try resolving relative include against repo root
+    inc_clean = inc[2:] if inc.startswith("./") else inc
+    root_cand = os.path.join(root_dir, inc_clean)
+    if os.path.isfile(root_cand):
+      rewritten.append(f'#include "{os.path.abspath(root_cand)}"')
     else:
-      rewritten.append(line)
+      # Last resort: keep line but normalize leading ./ to help -I search paths
+      if inc.startswith("./"):
+        rewritten.append(f'#include "{inc_clean}"')
+      else:
+        rewritten.append(line)
 
 out=[]; inserted=False
 for line in rewritten:
@@ -293,6 +298,7 @@ gmx grompp \
   -r "${run_root}/start.gro" \
   -p "${run_root}/topol.top" \
   -n "${run_root}/index.ndx" \
+  -I "${ROOT}" \
   -o "${run_root}/probe.tpr" \
   2>&1 | tee "${run_root}/probe.grompp.log"
 popd >/dev/null
@@ -423,6 +429,7 @@ gmx grompp \
   -r "${run_root}/start.gro" \
   -p "${run_root}/topol.top" \
   -n "${run_root}/index.ndx" \
+  -I "${ROOT}" \
   -o "${run_root}/pull.tpr"
 popd >/dev/null
 
