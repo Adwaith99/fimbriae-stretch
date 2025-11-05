@@ -215,7 +215,17 @@ for line in lines:
         rewritten.append(line); continue
     inc = m.group(1)
     cand = os.path.join(build_dir, inc)
-    rewritten.append(f'#include "{cand}"' if os.path.isfile(cand) else line)
+  if os.path.isfile(cand):
+    # If the include exists in build_dir, make it absolute to avoid CWD sensitivity
+    rewritten.append(f'#include "{os.path.abspath(cand)}"')
+  else:
+    # If the include starts with "./" but does not exist locally, drop the leading "./"
+    # so that GROMACS can resolve it via GMXLIB (e.g., forcefield includes)
+    if inc.startswith("./"):
+      inc2 = inc[2:]
+      rewritten.append(f'#include "{inc2}"')
+    else:
+      rewritten.append(line)
 
 out=[]; inserted=False
 for line in rewritten:
