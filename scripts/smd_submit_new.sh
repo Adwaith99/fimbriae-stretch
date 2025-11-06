@@ -147,12 +147,13 @@ PY
   LAST_STEP=""
   EXPECTED_STEPS=""
   if [[ -f "${RUN}/pull.log" ]]; then
-    LAST_STEP=$(awk '/Step/ {s=$2} END{print s}' "${RUN}/pull.log")
+    LAST_STEP=$(awk 'match($0,/Step[[:space:]]+([0-9]+)/,m){s=m[1]} END{if(s) print s}' "${RUN}/pull.log")
   fi
   if [[ -f "${RUN}/expected_nsteps.txt" ]]; then
     EXPECTED_STEPS=$(cat "${RUN}/expected_nsteps.txt")
   fi
-  if [[ -n "$LAST_STEP" && -n "$EXPECTED_STEPS" ]]; then
+  # Only do arithmetic if both values are integers
+  if [[ "${LAST_STEP}" =~ ^[0-9]+$ && "${EXPECTED_STEPS}" =~ ^[0-9]+$ ]]; then
     if (( LAST_STEP >= EXPECTED_STEPS )); then
       IS_DONE=1
     fi
@@ -172,10 +173,12 @@ PY
   # Determine restart status
   RESTART_MSG="start from scratch"
   if [[ -f "${RUN}/pull.cpt" ]]; then
-    if [[ -n "$LAST_STEP" ]]; then
-      RESTART_MSG="restart from checkpoint (step $LAST_STEP of $EXPECTED_STEPS)"
+    if [[ "${LAST_STEP}" =~ ^[0-9]+$ && "${EXPECTED_STEPS}" =~ ^[0-9]+$ ]]; then
+      RESTART_MSG="restart from checkpoint (step ${LAST_STEP} of ${EXPECTED_STEPS})"
+    elif [[ "${LAST_STEP}" =~ ^[0-9]+$ ]]; then
+      RESTART_MSG="restart from checkpoint (step ${LAST_STEP})"
     else
-      RESTART_MSG="restart from checkpoint (step unknown of $EXPECTED_STEPS)"
+      RESTART_MSG="restart from checkpoint (step unknown)"
     fi
   fi
 
