@@ -75,7 +75,21 @@ awk -F, -v OFS='\t' 'NR>1{
   print NR, $1, $2, $3, $4, $7, $13, $15
 }' "${MANIFEST}" > "${rows}"
 
-# Build a system -> perf lookup from config
+############################
+# Build a set of queued array indices from SLURM (avoid double-queuing)
+############################
+declare -A queued_indices
+if command -v squeue >/dev/null 2>&1; then
+  # Only check jobs for current user and this manifest
+  squeue -u "$USER" --name smd: --format="%j %A %a" | awk '{print $1,$3}' | while read jname arrayidx; do
+    # Extract array index from job name and array index
+    # Job name format: smd:<SYS>:v<SPD>
+    # Array index: <arrayidx>
+    [[ "$jname" =~ ^smd: ]] || continue
+    [[ -n "$arrayidx" ]] || continue
+    queued_indices["$arrayidx"]=1
+  done
+fi
 declare -A system_perf
 readarray -t PERF_MAP < <(python3 - <<'PY'
 import yaml
@@ -135,18 +149,40 @@ PY
       IS_DONE=1
     fi
   fi
-  
+
+  # Check if this array index is already queued
+  if [[ -n "${queued_indices[${L}]:-}" ]]; then
+    echo "[smd-submit-new] SKIP queued: ${RUN} (array index ${L})" >&2
+    continue
+  fi
+
   if [[ "${IS_DONE}" -eq 1 ]]; then
     echo "[smd-submit-new] SKIP completed: ${RUN}" >&2
     continue
   fi
-  
+
+  # Determine restart status
+  RESTART_MSG="start from scratch"
+  if [[ -f "${RUN}/pull.cpt" ]]; then
+    # Try to extract last completed step from pull.log
+    LAST_STEP=""
+    if [[ -f "${RUN}/pull.log" ]]; then
+      LAST_STEP=$(awk '/Step/ {s=$2} END{print s}' "${RUN}/pull.log")
+    fi
+    if [[ -n "$LAST_STEP" ]]; then
+      RESTART_MSG="restart from checkpoint (step $LAST_STEP)"
+    else
+      RESTART_MSG="restart from checkpoint (step unknown)"
+    fi
+  fi
+
   # Not completed = submit (even if in ledger or has partial files)
-  # User manages canceling active jobs manually before resubmitting
   if [[ -f "${RUN}/pull.log" ]]; then
-    echo "[smd-submit-new] RESUBMIT incomplete/failed: ${RUN}" >&2
+    echo "[smd-submit-new] RESUBMIT incomplete/failed: ${RUN} -- ${RESTART_MSG}" >&2
   elif [[ -n "${submitted[$KEY]:-}" ]]; then
-    echo "[smd-submit-new] RESUBMIT (was in ledger but not done): ${RUN}" >&2
+    echo "[smd-submit-new] RESUBMIT (was in ledger but not done): ${RUN} -- ${RESTART_MSG}" >&2
+  else
+    echo "[smd-submit-new] SUBMIT new: ${RUN} -- ${RESTART_MSG}" >&2
   fi
 
   GRP="${SYS}|${SPD}"
