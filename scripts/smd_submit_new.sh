@@ -144,8 +144,16 @@ PY
   # Check if run is truly DONE on disk
   RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
   IS_DONE=0
-  if [[ -f "${RUN}/pull.xtc" && -f "${RUN}/pull.log" ]]; then
-    if grep -q "Finished mdrun" "${RUN}/pull.log" 2>/dev/null; then
+  LAST_STEP=""
+  EXPECTED_STEPS=""
+  if [[ -f "${RUN}/pull.log" ]]; then
+    LAST_STEP=$(awk '/Step/ {s=$2} END{print s}' "${RUN}/pull.log")
+  fi
+  if [[ -f "${RUN}/expected_nsteps.txt" ]]; then
+    EXPECTED_STEPS=$(cat "${RUN}/expected_nsteps.txt")
+  fi
+  if [[ -n "$LAST_STEP" && -n "$EXPECTED_STEPS" ]]; then
+    if (( LAST_STEP >= EXPECTED_STEPS )); then
       IS_DONE=1
     fi
   fi
@@ -164,26 +172,15 @@ PY
   # Determine restart status
   RESTART_MSG="start from scratch"
   if [[ -f "${RUN}/pull.cpt" ]]; then
-    # Try to extract last completed step from pull.log
-    LAST_STEP=""
-    if [[ -f "${RUN}/pull.log" ]]; then
-      LAST_STEP=$(awk '/Step/ {s=$2} END{print s}' "${RUN}/pull.log")
-    fi
     if [[ -n "$LAST_STEP" ]]; then
-      RESTART_MSG="restart from checkpoint (step $LAST_STEP)"
+      RESTART_MSG="restart from checkpoint (step $LAST_STEP of $EXPECTED_STEPS)"
     else
-      RESTART_MSG="restart from checkpoint (step unknown)"
+      RESTART_MSG="restart from checkpoint (step unknown of $EXPECTED_STEPS)"
     fi
   fi
 
   # Not completed = submit (even if in ledger or has partial files)
-  if [[ -f "${RUN}/pull.log" ]]; then
-    echo "[smd-submit-new] RESUBMIT incomplete/failed: ${RUN} -- ${RESTART_MSG}" >&2
-  elif [[ -n "${submitted[$KEY]:-}" ]]; then
-    echo "[smd-submit-new] RESUBMIT (was in ledger but not done): ${RUN} -- ${RESTART_MSG}" >&2
-  else
-    echo "[smd-submit-new] SUBMIT new: ${RUN} -- ${RESTART_MSG}" >&2
-  fi
+  echo "[smd-submit-new] SUBMIT: ${RUN} -- ${RESTART_MSG}" >&2
 
   GRP="${SYS}|${SPD}"
   # Collect sparse array indices (CSV line numbers)
