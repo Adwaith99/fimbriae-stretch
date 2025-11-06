@@ -81,12 +81,41 @@ awk -F, -v OFS='\t' 'NR>1{
 declare -A queued_indices
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
-  # %i is the array task ID; use no header (-h). Only track our smd jobs.
+  # Try per-task first; some clusters don't show %i, so we fall back to parsing array ranges from %A.
+  got_any=0
   while read -r jname arrayidx; do
     [[ "$jname" =~ ^smd: ]] || continue
     [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
-    queued_indices["$arrayidx"]=1
-  done < <(squeue -h -u "$u" -o "%j %i")
+    queued_indices["$arrayidx"]=1; got_any=1
+  done < <(squeue -h -u "$u" -o "%j %i" 2>/dev/null)
+
+  if [[ "${got_any}" -eq 0 ]]; then
+    # Fallback: parse job array ranges from the JOBID field like 436236_[17-21%5,30,33-35]
+    while read -r jobid jname; do
+      [[ "$jname" =~ ^smd: ]] || continue
+      # Extract content inside brackets []
+      rng=$(python3 - <<'PY'
+import re,sys
+jobid=sys.argv[1]
+m=re.search(r'_\[(.+?)\]$', jobid)
+print(m.group(1) if m else "")
+PY
+"$jobid")
+      [[ -z "$rng" ]] && continue
+      # Split by comma and expand numeric ranges; strip %limits
+      while IFS=',' read -ra parts; do
+        for p in "${parts[@]}"; do
+          p_no=$(echo "$p" | cut -d'%' -f1)
+          if [[ "$p_no" =~ ^[0-9]+-[0-9]+$ ]]; then
+            IFS='-' read -r a b <<< "$p_no"
+            for ((k=a; k<=b; k++)); do queued_indices["$k"]=1; done
+          elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
+            queued_indices["$p_no"]=1
+          fi
+        done
+      done <<< "$rng"
+    done < <(squeue -h -u "$u" -o "%A %j" 2>/dev/null)
+  fi
 fi
 declare -A system_perf
 readarray -t PERF_MAP < <(python3 - <<'PY'
@@ -145,27 +174,30 @@ PY
   LAST_STEP=""
   EXPECTED_STEPS=""
   if [[ -f "${RUN}/pull.log" ]]; then
-    LAST_STEP=$(python3 - <<'PY'
-import re, sys
-log = sys.argv[1]
-max_step = 0
+    LOG_PATH="${RUN}/pull.log" python3 - <<'PY'
+import os,re
+log=os.environ.get('LOG_PATH','')
+max_step=0
 try:
   with open(log) as f:
     for line in f:
-      # Match either "Step <N>" at start or "Statistics over <N> steps"
-      m = re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
+      m=re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
       if m:
-        v = int(m.group(1))
-        if v > max_step:
-          max_step = v
-except FileNotFoundError:
+        v=int(m.group(1))
+        if v>max_step:
+          max_step=v
+except Exception:
   pass
 print(max_step if max_step>0 else "")
 PY
-"${RUN}/pull.log")
+    LAST_STEP=$(</dev/stdin)
   fi
   if [[ -f "${RUN}/expected_nsteps.txt" ]]; then
     EXPECTED_STEPS=$(cat "${RUN}/expected_nsteps.txt")
+  fi
+  # Fallback: parse nsteps from pull.mdp if expected file is missing
+  if [[ -z "${EXPECTED_STEPS}" && -f "${RUN}/pull.mdp" ]]; then
+    EXPECTED_STEPS=$(awk 'tolower($1)=="nsteps"{print $3}' "${RUN}/pull.mdp" | tail -n1)
   fi
   # Only do arithmetic if both values are integers
   if [[ "${LAST_STEP}" =~ ^[0-9]+$ && "${EXPECTED_STEPS}" =~ ^[0-9]+$ ]]; then
