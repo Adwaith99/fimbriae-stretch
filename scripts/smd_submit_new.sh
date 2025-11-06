@@ -76,9 +76,10 @@ awk -F, -v OFS='\t' 'NR>1{
 }' "${MANIFEST}" > "${rows}"
 
 ############################
-# Build a set of queued array indices from SLURM (avoid double-queuing)
+# Build a set of queued array tasks from SLURM (avoid double-queuing)
+# Key = "<JOB_NAME>|<ARRAY_INDEX>" (e.g., "smd:fimA_WT:v0.020|17")
 ############################
-declare -A queued_indices
+declare -A queued
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
   # Try per-task first; some clusters don't show %i, so we fall back to parsing array ranges from %A.
@@ -86,7 +87,8 @@ if command -v squeue >/dev/null 2>&1; then
   while read -r jname arrayidx; do
     [[ "$jname" =~ ^smd: ]] || continue
     [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
-    queued_indices["$arrayidx"]=1; got_any=1
+    queued["$jname|$arrayidx"]=1; got_any=1
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued task: $jname|$arrayidx" >&2
   done < <(squeue -h -u "$u" -o "%j %i" 2>/dev/null)
 
   if [[ "${got_any}" -eq 0 ]]; then
@@ -108,9 +110,9 @@ PY
           p_no=$(echo "$p" | cut -d'%' -f1)
           if [[ "$p_no" =~ ^[0-9]+-[0-9]+$ ]]; then
             IFS='-' read -r a b <<< "$p_no"
-            for ((k=a; k<=b; k++)); do queued_indices["$k"]=1; done
+            for ((k=a; k<=b; k++)); do queued["$jname|$k"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k" >&2; done
           elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
-            queued_indices["$p_no"]=1
+            queued["$jname|$p_no"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no" >&2
           fi
         done
       done <<< "$rng"
@@ -168,8 +170,17 @@ PY
     continue
   fi
 
-  # Check if run is truly DONE on disk
+  # Compute job name and run directory
+  JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] row=${L} JNAME=${JNAME} RUN=${RUN}" >&2
+  # Skip if queued
+  if [[ -n "${queued[${JNAME}|${L}]:-}" ]]; then
+    echo "[smd-submit-new] SKIP queued: ${RUN} (job ${JNAME} idx ${L})" >&2
+    continue
+  fi
+  
+  # Step-based completion only
   IS_DONE=0
   LAST_STEP=""
   EXPECTED_STEPS=""
@@ -205,18 +216,8 @@ PY
       IS_DONE=1
     fi
   fi
-  # Fallback for older runs: rely on "Finished mdrun" if expected steps file is missing
-  if [[ "${IS_DONE}" -eq 0 && -f "${RUN}/pull.log" ]]; then
-    if grep -q "Finished mdrun" "${RUN}/pull.log" 2>/dev/null; then
-      IS_DONE=1
-    fi
-  fi
-
-  # Check if this array index is already queued
-  if [[ -n "${queued_indices[${L}]:-}" ]]; then
-    echo "[smd-submit-new] SKIP queued: ${RUN} (array index ${L})" >&2
-    continue
-  fi
+  # No longer rely on 'Finished mdrun' to mark completion (handles maxh terminations correctly)
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] steps last=${LAST_STEP} expected=${EXPECTED_STEPS} done=${IS_DONE}" >&2
 
   if [[ "${IS_DONE}" -eq 1 ]]; then
     echo "[smd-submit-new] SKIP completed: ${RUN}" >&2
