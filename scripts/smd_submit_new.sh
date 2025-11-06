@@ -80,15 +80,13 @@ awk -F, -v OFS='\t' 'NR>1{
 ############################
 declare -A queued_indices
 if command -v squeue >/dev/null 2>&1; then
-  # Only check jobs for current user and this manifest
-  squeue -u "$USER" --name smd: --format="%j %A %a" | awk '{print $1,$3}' | while read jname arrayidx; do
-    # Extract array index from job name and array index
-    # Job name format: smd:<SYS>:v<SPD>
-    # Array index: <arrayidx>
+  u="${USER:-$(id -un 2>/dev/null)}"
+  # One line per array task: job name and array index (numeric). No header.
+  while read -r jname arrayidx; do
     [[ "$jname" =~ ^smd: ]] || continue
-    [[ -n "$arrayidx" ]] || continue
+    [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
     queued_indices["$arrayidx"]=1
-  done
+  done < <(squeue -h -u "$u" -o "%j %a")
 fi
 declare -A system_perf
 readarray -t PERF_MAP < <(python3 - <<'PY'
@@ -155,6 +153,12 @@ PY
   # Only do arithmetic if both values are integers
   if [[ "${LAST_STEP}" =~ ^[0-9]+$ && "${EXPECTED_STEPS}" =~ ^[0-9]+$ ]]; then
     if (( LAST_STEP >= EXPECTED_STEPS )); then
+      IS_DONE=1
+    fi
+  fi
+  # Fallback for older runs: rely on "Finished mdrun" if expected steps file is missing
+  if [[ "${IS_DONE}" -eq 0 && -f "${RUN}/pull.log" ]]; then
+    if grep -q "Finished mdrun" "${RUN}/pull.log" 2>/dev/null; then
       IS_DONE=1
     fi
   fi
