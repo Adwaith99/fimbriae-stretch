@@ -81,12 +81,12 @@ awk -F, -v OFS='\t' 'NR>1{
 declare -A queued_indices
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
-  # One line per array task: job name and array index (numeric). No header.
+  # %i is the array task ID; use no header (-h). Only track our smd jobs.
   while read -r jname arrayidx; do
     [[ "$jname" =~ ^smd: ]] || continue
     [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
     queued_indices["$arrayidx"]=1
-  done < <(squeue -h -u "$u" -o "%j %a")
+  done < <(squeue -h -u "$u" -o "%j %i")
 fi
 declare -A system_perf
 readarray -t PERF_MAP < <(python3 - <<'PY'
@@ -145,7 +145,24 @@ PY
   LAST_STEP=""
   EXPECTED_STEPS=""
   if [[ -f "${RUN}/pull.log" ]]; then
-    LAST_STEP=$(awk 'match($0,/Step[[:space:]]+([0-9]+)/,m){s=m[1]} END{if(s) print s}' "${RUN}/pull.log")
+    LAST_STEP=$(python3 - <<'PY'
+import re, sys
+log = sys.argv[1]
+max_step = 0
+try:
+  with open(log) as f:
+    for line in f:
+      # Match either "Step <N>" at start or "Statistics over <N> steps"
+      m = re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
+      if m:
+        v = int(m.group(1))
+        if v > max_step:
+          max_step = v
+except FileNotFoundError:
+  pass
+print(max_step if max_step>0 else "")
+PY
+"${RUN}/pull.log")
   fi
   if [[ -f "${RUN}/expected_nsteps.txt" ]]; then
     EXPECTED_STEPS=$(cat "${RUN}/expected_nsteps.txt")
