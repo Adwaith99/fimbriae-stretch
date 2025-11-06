@@ -79,7 +79,8 @@ awk -F, -v OFS='\t' 'NR>1{
 # Build a set of queued array tasks from SLURM (avoid double-queuing)
 # Key = "<JOB_NAME>|<ARRAY_INDEX>" (e.g., "smd:fimA_WT:v0.020|17")
 ############################
-declare -A queued
+declare -A queued              # keyed by JNAME|index when full job name present
+declare -A queued_index        # keyed by plain array index (fallback when squeue truncates name)
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
   # Try per-task first; some clusters don't show %i, so we fall back to parsing array ranges from %A.
@@ -110,9 +111,15 @@ PY
           p_no=$(echo "$p" | cut -d'%' -f1)
           if [[ "$p_no" =~ ^[0-9]+-[0-9]+$ ]]; then
             IFS='-' read -r a b <<< "$p_no"
-            for ((k=a; k<=b; k++)); do queued["$jname|$k"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k" >&2; done
+            for ((k=a; k<=b; k++)); do
+              queued["$jname|$k"]=1
+              queued_index["$k"]=1
+              [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k (index-only)" >&2
+            done
           elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
-            queued["$jname|$p_no"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no" >&2
+            queued["$jname|$p_no"]=1
+            queued_index["$p_no"]=1
+            [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no (index-only)" >&2
           fi
         done
       done <<< "$rng"
@@ -174,8 +181,8 @@ PY
   JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
   [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] row=${L} JNAME=${JNAME} RUN=${RUN}" >&2
-  # Skip if queued
-  if [[ -n "${queued[${JNAME}|${L}]:-}" ]]; then
+  # Skip if queued (prefer exact JNAME|idx, fall back to index-only)
+  if [[ -n "${queued[${JNAME}|${L}]:-}" || -n "${queued_index[${L}]:-}" ]]; then
     echo "[smd-submit-new] SKIP queued: ${RUN} (job ${JNAME} idx ${L})" >&2
     continue
   fi
