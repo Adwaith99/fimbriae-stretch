@@ -94,13 +94,13 @@ if command -v squeue >/dev/null 2>&1; then
     while read -r jobid jname; do
       [[ "$jname" =~ ^smd: ]] || continue
       # Extract content inside brackets []
-      rng=$(python3 - <<'PY'
+      rng=$(python3 - "$jobid" <<'PY'
 import re,sys
 jobid=sys.argv[1]
 m=re.search(r'_\[(.+?)\]$', jobid)
 print(m.group(1) if m else "")
 PY
-"$jobid")
+)
       [[ -z "$rng" ]] && continue
       # Split by comma and expand numeric ranges; strip %limits
       while IFS=',' read -ra parts; do
@@ -174,7 +174,7 @@ PY
   LAST_STEP=""
   EXPECTED_STEPS=""
   if [[ -f "${RUN}/pull.log" ]]; then
-    LOG_PATH="${RUN}/pull.log" python3 - <<'PY'
+    LAST_STEP=$(LOG_PATH="${RUN}/pull.log" python3 - <<'PY'
 import os,re
 log=os.environ.get('LOG_PATH','')
 max_step=0
@@ -190,7 +190,7 @@ except Exception:
   pass
 print(max_step if max_step>0 else "")
 PY
-    LAST_STEP=$(</dev/stdin)
+)
   fi
   if [[ -f "${RUN}/expected_nsteps.txt" ]]; then
     EXPECTED_STEPS=$(cat "${RUN}/expected_nsteps.txt")
