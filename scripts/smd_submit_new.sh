@@ -80,7 +80,46 @@ awk -F, -v OFS='\t' 'NR>1{
 # Key = "<JOB_NAME>|<ARRAY_INDEX>" (e.g., "smd:fimA_WT:v0.020|17")
 ############################
 declare -A queued              # keyed by JNAME|index when full job name present
-declare -A queued_index        # keyed by plain array index (fallback when squeue truncates name)
+declare -A queued_index        # keyed by plain array index (also used for 'sq' PD parsing)
+
+# Prefer site alias 'sq' if available: parse PD (pending) array ranges from JOBID column
+if command -v sq >/dev/null 2>&1; then
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending array indices" >&2
+  # Feed through Python to robustly expand ranges, even if the closing ']' is truncated in output
+  while read -r idx; do
+  [[ -z "$idx" ]] && continue
+  queued_index["$idx"]=1
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending index: $idx" >&2
+  done < <(sq | python3 - <<'PY'
+import sys,re
+lines=sys.stdin.read().splitlines()
+for i,line in enumerate(lines):
+  if i==0 and 'JOBID' in line:  # skip header
+    continue
+  if not line.strip():
+    continue
+  parts=re.split(r'\s+', line.strip())
+  if len(parts) < 6:
+    continue
+  jobid, user, account, name, state = parts[0], parts[1], parts[2], parts[3], parts[4]
+  if state != 'PD':
+    continue
+  m=re.search(r'_\[([^\]]+)', jobid)  # content after _[ up to ] (may be truncated)
+  if not m:
+    continue
+  payload=m.group(1)
+  for tok in payload.split(','):
+    core=tok.split('%',1)[0]
+    if re.match(r'^\d+-\d+$', core):
+      a,b=core.split('-'); a=int(a); b=int(b)
+      if a<=b:
+        for k in range(a,b+1):
+          print(k)
+    elif re.match(r'^\d+$', core):
+      print(int(core))
+PY
+)
+fi
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
   # Try per-task first; some clusters don't show %i, so we fall back to parsing array ranges from %A.
