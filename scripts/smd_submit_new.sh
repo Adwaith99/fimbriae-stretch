@@ -36,16 +36,28 @@ print(s.get("cpus_per_task", 8))
 print(s.get("nodes", 1))
 print(s.get("ntasks_per_node", 1))
 print(s.get("gromacs_module", ""))
+print(s.get("array_cap", 5))
 print(g.get("max_wall_hours", 168))
 PY
 )
 PART="${CFG[0]}"
-GRES_SPEC="${CFG[1]}"
+GPU_SPEC_RAW="${CFG[1]}"
 CPUS="${CFG[2]}"
 NODES="${CFG[3]}"
 NTASKS_PER_NODE="${CFG[4]}"
 GMX_MOD="${CFG[5]}"
-MAX_WALL_HOURS="${CFG[6]}"
+ARRAY_CAP_DEFAULT="${CFG[6]}"
+MAX_WALL_HOURS="${CFG[7]}"
+
+# Derive numeric gpus-per-node from GPU_SPEC_RAW (supports formats like "h100:4" or "4")
+GPUS_PER_NODE_COUNT=""
+if [[ -n "${GPU_SPEC_RAW}" ]]; then
+  if [[ "${GPU_SPEC_RAW}" =~ :([0-9]+)$ ]]; then
+    GPUS_PER_NODE_COUNT="${BASH_REMATCH[1]}"
+  elif [[ "${GPU_SPEC_RAW}" =~ ^[0-9]+$ ]]; then
+    GPUS_PER_NODE_COUNT="${GPU_SPEC_RAW}"
+  fi
+fi
 
 # CPU mode toggle
 CPU_MODE="${CPU:-0}"
@@ -315,7 +327,8 @@ a=float("${cur}"); b=float("${ht}")
 print("{:.3f}".format(max(a,b)))
 PY
 )
-  grp_cap[$GRP]="${CAP:-5}"
+  # Use array cap from config (ignore manifest column); fall back to 5 if not set
+  grp_cap[$GRP]="${ARRAY_CAP_DEFAULT:-5}"
 done < "${rows}"
 
 if [[ "${BAD}" -gt 0 ]]; then
@@ -373,8 +386,10 @@ PY
     echo "[smd-submit-new] CPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} nodes=${NODES} ntasks/node=${NTASKS_PER_NODE}"
   else
     # GPU mode
-    [[ -n "${GRES_SPEC}" ]] && SBATCH_ARGS+=(--gres="gpu:${GRES_SPEC}")
-    echo "[smd-submit-new] GPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} gres=${GRES_SPEC}"
+    if [[ -n "${GPUS_PER_NODE_COUNT}" ]]; then
+      SBATCH_ARGS+=(--gpus-per-node="${GPUS_PER_NODE_COUNT}")
+    fi
+    echo "[smd-submit-new] GPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} gpus-per-node=${GPUS_PER_NODE_COUNT}"
   fi
 
   if [[ -n "${SLURM_TEST_ONLY:-}" ]]; then
