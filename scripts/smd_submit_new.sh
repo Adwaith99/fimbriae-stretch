@@ -118,7 +118,7 @@ for i,line in enumerate(lines):
     elif re.match(r'^\d+$', core):
       print(int(core))
 PY
-)
+      if command -v squeue >/dev/null 2>&1; then
 fi
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
@@ -156,11 +156,28 @@ PY
               [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k (index-only)" >&2
             done
           elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
+
+        # Independent PD scan: build index list from JOBID even if name truncated (covers your 'sq' format when alias not available)
+        while read -r jobid jname state; do
+          [[ "$state" = PD ]] || continue
+          # Extract bracket payload
+          payload=$(python3 - "$jobid" <<'PY'
             queued["$jname|$p_no"]=1
             queued_index["$p_no"]=1
             [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no (index-only)" >&2
           fi
         done
+          [[ -z "$payload" ]] && continue
+          IFS=',' read -ra toks <<< "$payload"
+          for t in "${toks[@]}"; do
+            core=${t%%\%*}
+            if [[ "$core" =~ ^[0-9]+-[0-9]+$ ]]; then
+              IFS='-' read -r a b <<< "$core"; for ((k=a;k<=b;k++)); do queued_index["$k"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] squeue PD index: $k" >&2; done
+            elif [[ "$core" =~ ^[0-9]+$ ]]; then
+              queued_index["$core"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] squeue PD index: $core" >&2
+            fi
+          done
+        done < <(squeue -h -u "$u" -o "%A %j %T" 2>/dev/null)
       done <<< "$rng"
     done < <(squeue -h -u "$u" -o "%A %j" 2>/dev/null)
   fi
