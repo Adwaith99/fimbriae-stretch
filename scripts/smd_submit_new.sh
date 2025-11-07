@@ -173,8 +173,7 @@ PY
 fi
 if [[ -n "${SMD_DEBUG:-}" ]]; then
   # Print a compact sorted list of pending/queued indices detected
-  _qcount="${#queued_index[@]:-0}"
-  if [[ "${_qcount}" -gt 0 ]]; then
+  if [[ "${!queued_index[@]}" ]]; then
     mapfile -t _qtmp < <(for k in "${!queued_index[@]}"; do echo "$k"; done | sort -n)
     echo "[smd-submit-new][dbg] final queued indices: ${_qtmp[*]}" >&2
   else
