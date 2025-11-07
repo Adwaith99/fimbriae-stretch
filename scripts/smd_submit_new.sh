@@ -85,15 +85,21 @@ declare -A queued_index        # keyed by plain array index (also used for 'sq' 
 # Prefer site alias 'sq' if available: parse PD (pending) array ranges from JOBID column
 if command -v sq >/dev/null 2>&1; then
   [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending array indices" >&2
-  # Feed through Python to expand ranges, filtering to smd jobs and PD state
+  # Capture sq output and feed to Python to expand ranges
+  sq_output=$(sq 2>&1)
+  if [[ -n "${SMD_DEBUG:-}" ]]; then
+    echo "[smd-submit-new][dbg] sq returned $(echo "$sq_output" | wc -l) lines" >&2
+  fi
   while read -r idx; do
     [[ -z "$idx" ]] && continue
     queued_index["$idx"]=1
     [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending index: $idx" >&2
-  done < <(sq | python3 - <<'PY'
+  done < <(echo "$sq_output" | python3 - <<'PY'
 import sys,re,os
 lines=sys.stdin.read().splitlines()
 debug=os.environ.get('SMD_DEBUG','')
+if debug:
+    print(f"[sq-parse] Python received {len(lines)} lines", file=sys.stderr)
 for i,line in enumerate(lines):
     if i==0 and 'JOBID' in line:
         continue
@@ -102,10 +108,13 @@ for i,line in enumerate(lines):
     parts=re.split(r'\s+', line.strip())
     # Expect columns: JOBID USER ACCOUNT NAME ST ...
     if len(parts) < 5:
+        if debug:
+            print(f"[sq-parse] skipping line {i} (only {len(parts)} parts): {line[:60]}", file=sys.stderr)
         continue
     jobid,name,state = parts[0], parts[3], parts[4]
     if debug:
-        print(f"[sq-parse] jobid={jobid} name={name} state={state}", file=sys.stderr)
+        print(f"[sq-parse] line {i}: jobid={jobid} name={name} state={state}", file=sys.stderr)
+    # Match any smd: job (name may be truncated)
     if not name.startswith('smd:'):
         continue
     if state != 'PD':
@@ -117,7 +126,7 @@ for i,line in enumerate(lines):
         continue
     payload=m.group(1)
     if debug:
-        print(f"[sq-parse] extracted payload: {payload}", file=sys.stderr)
+        print(f"[sq-parse] extracted payload from {jobid}: {payload}", file=sys.stderr)
     for tok in payload.split(','):
         core=tok.split('%',1)[0]
         if re.match(r'^\d+-\d+$', core):
