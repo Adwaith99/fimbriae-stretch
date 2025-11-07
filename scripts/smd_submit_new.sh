@@ -91,8 +91,9 @@ if command -v sq >/dev/null 2>&1; then
     queued_index["$idx"]=1
     [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending index: $idx" >&2
   done < <(sq | python3 - <<'PY'
-import sys,re
+import sys,re,os
 lines=sys.stdin.read().splitlines()
+debug=os.environ.get('SMD_DEBUG','')
 for i,line in enumerate(lines):
     if i==0 and 'JOBID' in line:
         continue
@@ -103,14 +104,20 @@ for i,line in enumerate(lines):
     if len(parts) < 5:
         continue
     jobid,name,state = parts[0], parts[3], parts[4]
+    if debug:
+        print(f"[sq-parse] jobid={jobid} name={name} state={state}", file=sys.stderr)
     if not name.startswith('smd:'):
         continue
     if state != 'PD':
         continue
     m=re.search(r'_\[([^\]]+)', jobid)  # allow truncated closing bracket
     if not m:
+        if debug:
+            print(f"[sq-parse] no bracket range in jobid: {jobid}", file=sys.stderr)
         continue
     payload=m.group(1)
+    if debug:
+        print(f"[sq-parse] extracted payload: {payload}", file=sys.stderr)
     for tok in payload.split(','):
         core=tok.split('%',1)[0]
         if re.match(r'^\d+-\d+$', core):
