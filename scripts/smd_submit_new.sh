@@ -85,51 +85,58 @@ declare -A queued_index        # keyed by plain array index (also used for 'sq' 
 # Prefer site alias 'sq' if available: parse PD (pending) array ranges from JOBID column
 if command -v sq >/dev/null 2>&1; then
   [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending array indices" >&2
-  # Feed through Python to robustly expand ranges, even if the closing ']' is truncated in output
+  # Feed through Python to expand ranges, filtering to smd jobs and PD state
   while read -r idx; do
-  [[ -z "$idx" ]] && continue
-  queued_index["$idx"]=1
-  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending index: $idx" >&2
+    [[ -z "$idx" ]] && continue
+    queued_index["$idx"]=1
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending index: $idx" >&2
   done < <(sq | python3 - <<'PY'
 import sys,re
 lines=sys.stdin.read().splitlines()
 for i,line in enumerate(lines):
-  if i==0 and 'JOBID' in line:  # skip header
-    continue
-  if not line.strip():
-    continue
-  parts=re.split(r'\s+', line.strip())
-  if len(parts) < 6:
-    continue
-  jobid, user, account, name, state = parts[0], parts[1], parts[2], parts[3], parts[4]
-  if state != 'PD':
-    continue
-  m=re.search(r'_\[([^\]]+)', jobid)  # content after _[ up to ] (may be truncated)
-  if not m:
-    continue
-  payload=m.group(1)
-  for tok in payload.split(','):
-    core=tok.split('%',1)[0]
-    if re.match(r'^\d+-\d+$', core):
-      a,b=core.split('-'); a=int(a); b=int(b)
-      if a<=b:
-        for k in range(a,b+1):
-          print(k)
-    elif re.match(r'^\d+$', core):
-      print(int(core))
+    if i==0 and 'JOBID' in line:
+        continue
+    if not line.strip():
+        continue
+    parts=re.split(r'\s+', line.strip())
+    # Expect columns: JOBID USER ACCOUNT NAME ST ...
+    if len(parts) < 5:
+        continue
+    jobid,name,state = parts[0], parts[3], parts[4]
+    if not name.startswith('smd:'):
+        continue
+    if state != 'PD':
+        continue
+    m=re.search(r'_\[([^\]]+)', jobid)  # allow truncated closing bracket
+    if not m:
+        continue
+    payload=m.group(1)
+    for tok in payload.split(','):
+        core=tok.split('%',1)[0]
+        if re.match(r'^\d+-\d+$', core):
+            a,b=core.split('-')
+            a=int(a); b=int(b)
+            if a<=b:
+                for k in range(a,b+1):
+                    print(k)
+        elif re.match(r'^\d+$', core):
+            print(int(core))
 PY
-      if command -v squeue >/dev/null 2>&1; then
+  )
 fi
+
+# Also query squeue for exact task indices and names
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
   # Try per-task first; some clusters don't show %i, so we fall back to parsing array ranges from %A.
   got_any=0
-  while read -r jname arrayidx; do
+  while read -r jname arrayidx state; do
     [[ "$jname" =~ ^smd: ]] || continue
     [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
     queued["$jname|$arrayidx"]=1; got_any=1
-    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued task: $jname|$arrayidx" >&2
-  done < <(squeue -h -u "$u" -o "%j %i" 2>/dev/null)
+    queued_index["$arrayidx"]=1
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued task: $jname|$arrayidx (state=$state)" >&2
+  done < <(squeue -h -u "$u" -o "%j %i %T" 2>/dev/null)
 
   if [[ "${got_any}" -eq 0 ]]; then
     # Fallback: parse job array ranges from the JOBID field like 436236_[17-21%5,30,33-35]
@@ -145,41 +152,32 @@ PY
 )
       [[ -z "$rng" ]] && continue
       # Split by comma and expand numeric ranges; strip %limits
-      while IFS=',' read -ra parts; do
-        for p in "${parts[@]}"; do
-          p_no=$(echo "$p" | cut -d'%' -f1)
-          if [[ "$p_no" =~ ^[0-9]+-[0-9]+$ ]]; then
-            IFS='-' read -r a b <<< "$p_no"
-            for ((k=a; k<=b; k++)); do
-              queued["$jname|$k"]=1
-              queued_index["$k"]=1
-              [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k (index-only)" >&2
-            done
-          elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
-
-        # Independent PD scan: build index list from JOBID even if name truncated (covers your 'sq' format when alias not available)
-        while read -r jobid jname state; do
-          [[ "$state" = PD ]] || continue
-          # Extract bracket payload
-          payload=$(python3 - "$jobid" <<'PY'
-            queued["$jname|$p_no"]=1
-            queued_index["$p_no"]=1
-            [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no (index-only)" >&2
-          fi
-        done
-          [[ -z "$payload" ]] && continue
-          IFS=',' read -ra toks <<< "$payload"
-          for t in "${toks[@]}"; do
-            core=${t%%\%*}
-            if [[ "$core" =~ ^[0-9]+-[0-9]+$ ]]; then
-              IFS='-' read -r a b <<< "$core"; for ((k=a;k<=b;k++)); do queued_index["$k"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] squeue PD index: $k" >&2; done
-            elif [[ "$core" =~ ^[0-9]+$ ]]; then
-              queued_index["$core"]=1; [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] squeue PD index: $core" >&2
-            fi
+      IFS=',' read -ra parts <<< "$rng"
+      for p in "${parts[@]}"; do
+        p_no=${p%%\%*}
+        if [[ "$p_no" =~ ^[0-9]+-[0-9]+$ ]]; then
+          IFS='-' read -r a b <<< "$p_no"
+          for ((k=a; k<=b; k++)); do
+            queued["$jname|$k"]=1
+            queued_index["$k"]=1
+            [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k" >&2
           done
-        done < <(squeue -h -u "$u" -o "%A %j %T" 2>/dev/null)
-      done <<< "$rng"
+        elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
+          queued["$jname|$p_no"]=1
+          queued_index["$p_no"]=1
+          [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no" >&2
+        fi
+      done
     done < <(squeue -h -u "$u" -o "%A %j" 2>/dev/null)
+  fi
+fi
+if [[ -n "${SMD_DEBUG:-}" ]]; then
+  # Print a compact sorted list of pending/queued indices detected
+  if (( ${#queued_index[@]} > 0 )); then
+    mapfile -t _qtmp < <(for k in "${!queued_index[@]}"; do echo "$k"; done | sort -n)
+    echo "[smd-submit-new][dbg] final queued indices: ${_qtmp[*]}" >&2
+  else
+    echo "[smd-submit-new][dbg] no queued indices detected" >&2
   fi
 fi
 declare -A system_perf
