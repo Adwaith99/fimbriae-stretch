@@ -477,7 +477,7 @@ mdargs=( -v -deffnm pull )
 if [[ -f "pull.cpt" ]]; then
   echo "[smd-runner] Found checkpoint pull.cpt; continuing from restart"
   # For SMD/pull code, also ensure we continue writing pull traces consistently
-  mdargs+=( -cpi pull.cpt -px pullx.xvg -pf pullf.xvg )
+  mdargs+=( -cpi pull.cpt -px pull_pullx.xvg -pf pull_pullf.xvg )
   # Mark this as a restart (increment counter)
   RESTART_NUM="${RESTART_COUNT:-0}"
   touch ".restart_${RESTART_NUM}"

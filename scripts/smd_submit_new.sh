@@ -94,18 +94,18 @@ awk -F, -v OFS='\t' 'NR>1{
 declare -A queued              # keyed by JNAME|index when full job name present
 declare -A queued_index        # keyed by plain array index (also used for 'sq' PD parsing)
 
-# Prefer site alias 'sq' if available: parse PD (pending) array ranges from JOBID column
+# Prefer site alias 'sq' if available: parse PD/R (pending/running) array ranges from JOBID column
 if command -v sq >/dev/null 2>&1; then
-  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending array indices" >&2
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending/running array indices" >&2
   # Parse sq output directly with awk, then expand ranges with Python
   while read -r jobid_range; do
     [[ -z "$jobid_range" ]] && continue
-    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq found PD array: $jobid_range" >&2
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq found PD/R array: $jobid_range" >&2
     # Expand the range with Python
     while read -r idx; do
       [[ -z "$idx" ]] && continue
       queued_index["$idx"]=1
-      [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending index: $idx" >&2
+      [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending/running index: $idx" >&2
     done < <(python3 - "$jobid_range" <<'PY'
 import sys,re
 jobid=sys.argv[1]
@@ -124,17 +124,18 @@ for tok in payload.split(','):
         print(int(core))
 PY
     )
-  done < <(sq 2>&1 | awk '$5=="PD" && $4~/^smd:/ {print $1}')
+  done < <(sq 2>&1 | awk '($5=="PD" || $5=="R") && $4~/^smd:/ {print $1}')
 fi
 
 # Also query squeue for exact task indices and names
 if command -v squeue >/dev/null 2>&1; then
   u="${USER:-$(id -un 2>/dev/null)}"
-  # Try per-task first; some clusters don't show %i, so we fall back to parsing array ranges from %A.
+  # Try per-task first; filter PD and R states
   got_any=0
   while read -r jname arrayidx state; do
     [[ "$jname" =~ ^smd: ]] || continue
     [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
+    [[ "$state" =~ ^(PD|R)$ ]] || continue
     queued["$jname|$arrayidx"]=1; got_any=1
     queued_index["$arrayidx"]=1
     [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued task: $jname|$arrayidx (state=$state)" >&2
