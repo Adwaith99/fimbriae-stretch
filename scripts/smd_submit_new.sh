@@ -80,11 +80,10 @@ fi
 # Parse manifest rows to TSV (TAB-separated!)
 tmpdir=$(mktemp -d); trap 'rm -rf "${tmpdir}"' EXIT
 rows="${tmpdir}/rows.tsv"
-# lineno  system  variant  replicate  speed  target  start_id  array_cap
-# Note: we no longer extract perf from manifest (column 9); we'll look it up from config per system
+# lineno  system  variant  replicate  speed  dt_ps  target  start_id  array_cap
 awk -F, -v OFS='\t' 'NR>1{
   gsub(/^"|"$/, "", $0);
-  print NR, $1, $2, $3, $4, $7, $13, $15
+  print NR, $1, $2, $3, $4, $6, $7, $13, $15
 }' "${MANIFEST}" > "${rows}"
 
 ############################
@@ -207,7 +206,7 @@ done
 # Group NEW rows by (system, speed)
 declare -A grp_idxs grp_time grp_cap
 BAD=0
-while IFS=$'\t' read -r L SYS VAR REP SPD TGT START CAP; do
+while IFS=$'\t' read -r L SYS VAR REP SPD DT TGT START CAP; do
   # Skip empty lines defensively
   [[ -z "${L}" ]] && continue
 
@@ -230,11 +229,11 @@ while IFS=$'\t' read -r L SYS VAR REP SPD TGT START CAP; do
 
   # Numeric sanity
   if ! python3 - <<PY >/dev/null 2>&1
-spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}")
-assert spd>0 and tgt>0 and perf>0
+spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); dt=float("${DT:-0.002}")
+assert spd>0 and tgt>0 and perf>0 and dt>0
 PY
   then
-    echo "[smd-submit-new] WARN: skipping line ${L} (invalid numbers: speed=${SPD}, target=${TGT}, perf=${PERF})" >&2
+    echo "[smd-submit-new] WARN: skipping line ${L} (invalid numbers: speed=${SPD}, target=${TGT}, perf=${PERF}, dt=${DT})" >&2
     BAD=$((BAD+1))
     continue
   fi
@@ -316,14 +315,33 @@ PY
     grp_idxs[$GRP]="${L}"
   fi
 
-  # walltime hours per row = (target/speed)/perf * 24 * SAFETY, capped at MAX_WALL_HOURS
-  ht=$(python3 - <<PY
-import math
+  # walltime hours per row: use REMAINING steps for restarts, or full simulation for fresh starts
+  ht=$(RUN="${RUN}" LAST_STEP="${LAST_STEP}" EXPECTED_STEPS="${EXPECTED_STEPS}" python3 - <<PY
+import math, os
 spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); pad=float("${SAFETY}")
 max_hrs=float("${MAX_WALL_HOURS}")
-ns=tgt/spd; days=(ns/perf)
-h=days*24*pad
-h=max(1.0, min(h, max_hrs))
+dt_ps=float("${DT}")
+
+run=os.environ.get("RUN","")
+last_step_str=os.environ.get("LAST_STEP","")
+expected_str=os.environ.get("EXPECTED_STEPS","")
+
+# If we have both last_step and expected, compute remaining time
+if last_step_str and last_step_str.isdigit() and expected_str and expected_str.isdigit():
+    last_step=int(last_step_str)
+    expected=int(expected_str)
+    remaining_steps=max(0, expected - last_step)
+    # Convert steps to ns: steps * dt_ps / 1000
+    ns_rem = (remaining_steps * dt_ps) / 1000.0
+    days = ns_rem / perf
+    h = days * 24 * pad
+else:
+    # Fresh start: use full target extension
+    ns = tgt / spd
+    days = ns / perf
+    h = days * 24 * pad
+
+h = max(1.0, min(h, max_hrs))
 print("{:.3f}".format(h))
 PY
 )
