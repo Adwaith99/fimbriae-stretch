@@ -96,15 +96,16 @@ declare -A queued_index        # keyed by plain array index (also used for 'sq' 
 # Prefer site alias 'sq' if available: parse PD/R (pending/running) array ranges from JOBID column
 if command -v sq >/dev/null 2>&1; then
   [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending/running array indices" >&2
-  # Parse sq output directly with awk, then expand ranges with Python
-  while read -r jobid_range; do
+  # Parse sq output: extract both JOBID and NAME, then expand ranges with Python
+  while IFS='|' read -r jobid_range jname; do
     [[ -z "$jobid_range" ]] && continue
-    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq found PD/R array: $jobid_range" >&2
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq found PD/R array: $jobid_range (name=$jname)" >&2
     # Expand the range with Python (handles both bracketed ranges and single indices)
     while read -r idx; do
       [[ -z "$idx" ]] && continue
+      queued["$jname|$idx"]=1
       queued_index["$idx"]=1
-      [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending/running index: $idx" >&2
+      [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending/running: $jname|$idx" >&2
     done < <(python3 - "$jobid_range" <<'PY'
 import sys,re
 jobid=sys.argv[1]
@@ -128,7 +129,7 @@ else:
         print(int(m2.group(1)))
 PY
     )
-  done < <(sq 2>&1 | awk '($5=="PD" || $5=="R") && $4~/^smd:/ {print $1}')
+  done < <(sq 2>&1 | awk '($5=="PD" || $5=="R") && $4~/^smd:/ {print $1"|"$4}')
 fi
 
 # Also query squeue for exact task indices and names
