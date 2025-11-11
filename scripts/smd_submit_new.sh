@@ -101,7 +101,7 @@ if command -v sq >/dev/null 2>&1; then
   while read -r jobid_range; do
     [[ -z "$jobid_range" ]] && continue
     [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq found PD/R array: $jobid_range" >&2
-    # Expand the range with Python
+    # Expand the range with Python (handles both bracketed ranges and single indices)
     while read -r idx; do
       [[ -z "$idx" ]] && continue
       queued_index["$idx"]=1
@@ -109,19 +109,24 @@ if command -v sq >/dev/null 2>&1; then
     done < <(python3 - "$jobid_range" <<'PY'
 import sys,re
 jobid=sys.argv[1]
-m=re.search(r'_\[(.+)', jobid)  # match everything after _[
-if not m:
-    sys.exit(0)
-payload=m.group(1).rstrip(']')  # remove trailing ] if present
-for tok in payload.split(','):
-    core=tok.split('%',1)[0]
-    if re.match(r'^\d+-\d+$', core):
-        a,b=map(int, core.split('-'))
-        if a<=b:
-            for k in range(a,b+1):
-                print(k)
-    elif re.match(r'^\d+$', core):
-        print(int(core))
+# Check for bracket notation first: JOBID_[range]
+m=re.search(r'_\[(.+)', jobid)
+if m:
+    payload=m.group(1).rstrip(']')
+    for tok in payload.split(','):
+        core=tok.split('%',1)[0]
+        if re.match(r'^\d+-\d+$', core):
+            a,b=map(int, core.split('-'))
+            if a<=b:
+                for k in range(a,b+1):
+                    print(k)
+        elif re.match(r'^\d+$', core):
+            print(int(core))
+else:
+    # No brackets: check for single index like JOBID_17
+    m2=re.search(r'_(\d+)$', jobid)
+    if m2:
+        print(int(m2.group(1)))
 PY
     )
   done < <(sq 2>&1 | awk '($5=="PD" || $5=="R") && $4~/^smd:/ {print $1}')
