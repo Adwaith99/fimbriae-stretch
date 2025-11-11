@@ -243,8 +243,8 @@ PY
   JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
   [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] row=${L} JNAME=${JNAME} RUN=${RUN}" >&2
-  # Skip if queued (prefer exact JNAME|idx, fall back to index-only)
-  if [[ -n "${queued[${JNAME}|${L}]:-}" || -n "${queued_index[${L}]:-}" ]]; then
+  # Skip if queued: check exact job name + index match
+  if [[ -n "${queued[${JNAME}|${L}]:-}" ]]; then
     echo "[smd-submit-new] SKIP queued: ${RUN} (job ${JNAME} idx ${L})" >&2
     continue
   fi
