@@ -23,6 +23,8 @@ if [[ ! -d "$SMD_DIR" ]]; then
   exit 0
 fi
 
+# seen dirs map
+declare -A _seen_dirs
 printf "system\tvariant\tspeed\trep\tstart\trestart_count\trestarts\tlatest_restart\n"
 
 # Use find to iterate unique dirs containing restart markers
