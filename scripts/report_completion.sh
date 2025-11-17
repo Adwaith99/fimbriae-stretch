@@ -86,6 +86,7 @@ except Exception:
   pass
 print(max_step if max_step>0 else "")
 PY
+    )
   fi
 
   # determine dt_ps (from pull.mdp or config global dt_ps)
