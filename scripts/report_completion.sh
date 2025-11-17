@@ -59,14 +59,35 @@ for entry in "${PERF_MAP[@]}"; do
   fi
 done
 
-# iterate runs via expected_nsteps.txt presence
-while IFS= read -r -d $'\0' file; do
-  dir=$(dirname "$file")
-  rel=${dir#${SMD_DIR}/}
-  IFS='/' read -r system variant vs rep startid <<< "$rel"
-  speed="${vs#v}"
+MANIFEST="$ROOT/manifests/smd_manifest.csv"
+[[ -f "$MANIFEST" ]] || { echo "Manifest not found: $MANIFEST" >&2; exit 2; }
 
-  expected=$(cat "$file" 2>/dev/null || echo "")
+# iterate manifest rows so we include not-started runs and runs without expected_nsteps.txt
+tail -n +2 "$MANIFEST" | while IFS=',' read -r system variant replicate speed_nm_per_ns k_kj dt_mani target_extension_nm axis perf start_time_ps final_tpr final_xtc start_id anchor_chain array_cap; do
+  # normalize speed dir like smd_runner: v%.3f
+  vs=$(printf "v%.3f" "$speed_nm_per_ns")
+  dir="$SMD_DIR/$system/$variant/$vs/rep${replicate}/${start_id}"
+
+  expected_n=""
+  if [[ -f "$dir/expected_nsteps.txt" ]]; then
+    expected_n=$(cat "$dir/expected_nsteps.txt" 2>/dev/null || echo "")
+  else
+    # compute expected nsteps from manifest columns: target_extension_nm, speed_nm_per_ns, dt (manifest dt or global)
+    dt_use="$dt_mani"
+    if [[ -z "$dt_use" || "$dt_use" == "" ]]; then
+      dt_use=$(python3 - <<PY
+import yaml, os
+cfg=yaml.safe_load(open(os.path.join(os.environ['ROOT'],'config.yaml')))
+print(cfg.get('globals',{}).get('dt_ps',0.002))
+PY
+)
+    fi
+    base_rate=$(awk -v s="$speed_nm_per_ns" 'BEGIN{printf "%.6f", (s/1000.0)}')
+    total_time_ps=$(awk -v tgt="$target_extension_nm" -v rate="$base_rate" 'BEGIN{ if (rate==0) print 0; else printf "%.3f", (tgt/rate)}')
+    expected_n=$(awk -v dt="$dt_use" -v tps="$total_time_ps" 'BEGIN{ if (dt==0) print 0; else printf "%d", int((tps/dt)+0.999999)}')
+  fi
+
+  # get last_step if pull.log exists
   last_step=""
   if [[ -f "$dir/pull.log" ]]; then
     export DIR="$dir"
@@ -86,30 +107,12 @@ except Exception:
   pass
 print(max_step if max_step>0 else "")
 PY
-    )
-  fi
-
-  # determine dt_ps (from pull.mdp or config global dt_ps)
-  dt_ps=""
-  if [[ -f "$dir/pull.mdp" ]]; then
-    dt_ps=$(awk 'tolower($1)=="dt"{print $3}' "$dir/pull.mdp" | tail -n1)
-  fi
-  if [[ -z "$dt_ps" ]]; then
-    dt_ps=$(python3 - <<PY
-import yaml, os
-cfg=yaml.safe_load(open(os.path.join(os.environ['ROOT'],'config.yaml')))
-print(cfg.get('globals',{}).get('dt_ps',0.002))
-PY
 )
-
   fi
 
-  # numericize
-  expected_n=0
+  # numericize and compute remaining
+  expected_n=${expected_n:-0}
   remaining_steps=0
-  if [[ "$expected" =~ ^[0-9]+$ ]]; then
-    expected_n=$expected
-  fi
   if [[ "$last_step" =~ ^[0-9]+$ ]]; then
     remaining_steps=$(( expected_n - last_step ))
     if (( remaining_steps < 0 )); then remaining_steps=0; fi
@@ -117,17 +120,28 @@ PY
     remaining_steps=$expected_n
   fi
 
+  # ns remaining
   ns_remaining="0"
   if [[ "$remaining_steps" =~ ^[0-9]+$ ]]; then
-    # dt_ps is in ps -> ns = (steps * dt_ps) / 1000
-    ns_remaining=$(awk -v steps="$remaining_steps" -v dt="$dt_ps" 'BEGIN{ if (dt==""||dt==0) {print "0"} else {ns=(steps*dt)/1000.0; printf "%.6f", ns}}')
+    # determine dt to use for ns calc: prefer pull.mdp if exists, else manifest dt, else global
+    dt_calc="$dt_mani"
+    if [[ -f "$dir/pull.mdp" ]]; then
+      dt_calc=$(awk 'tolower($1)=="dt"{print $3}' "$dir/pull.mdp" | tail -n1)
+    fi
+    if [[ -z "$dt_calc" || "$dt_calc" == "" ]]; then
+      dt_calc=$(python3 - <<PY
+import yaml, os
+cfg=yaml.safe_load(open(os.path.join(os.environ['ROOT'],'config.yaml')))
+print(cfg.get('globals',{}).get('dt_ps',0.002))
+PY
+)
+    fi
+    ns_remaining=$(awk -v steps="$remaining_steps" -v dt="$dt_calc" 'BEGIN{ if (dt==""||dt==0) {print "0"} else {ns=(steps*dt)/1000.0; printf "%.6f", ns}}')
   fi
 
-  # estimate hours using system perf
-  perf=${system_perf[$system]:-$GLOBAL_PERF}
-  est_hours=""
+  perf_sys=${system_perf[$system]:-$GLOBAL_PERF}
   if [[ -n "$ns_remaining" && $(echo "$ns_remaining > 0" | bc -l) -eq 1 ]]; then
-    est_hours=$(awk -v ns="$ns_remaining" -v perf="$perf" -v pad="$SAFETY" 'BEGIN{ if (ns==""||ns==0||perf==0) print 0; else {hrs=(ns/perf)*24.0*pad; printf "%.3f", hrs}}')
+    est_hours=$(awk -v ns="$ns_remaining" -v perf="$perf_sys" -v pad="$SAFETY" 'BEGIN{ if (ns==""||ns==0||perf==0) print 0; else {hrs=(ns/perf)*24.0*pad; printf "%.3f", hrs}}')
   else
     est_hours=0
   fi
@@ -141,9 +155,9 @@ PY
   fi
 
   printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-    "$system" "$variant" "$speed" "${rep#rep}" "$startid" "$completed" "$last_step" "$expected_n" "$remaining_steps" "$ns_remaining" "$est_hours" >> "$TMP"
+    "$system" "$variant" "${speed_nm_per_ns}" "${replicate}" "$start_id" "$completed" "$last_step" "$expected_n" "$remaining_steps" "$ns_remaining" "$est_hours" >> "$TMP"
 
-done < <(find "$SMD_DIR" -type f -name expected_nsteps.txt -print0)
+done
 
 # Summarize and print human-friendly report
 total=$(($(wc -l < "$TMP") - 1))
