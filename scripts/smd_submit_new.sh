@@ -248,6 +248,26 @@ PY
     echo "[smd-submit-new] SKIP queued: ${RUN} (job ${JNAME} idx ${L})" >&2
     continue
   fi
+  # Fallback: if that array index is queued somewhere, check whether it's queued
+  # for the same system (to avoid cross-project collisions due to truncated job names).
+  if [[ -n "${queued_index[${L}]:-}" ]]; then
+    _found=0
+    for _k in "${!queued[@]}"; do
+      _name="${_k%%|*}"
+      _idx="${_k##*|}"
+      if [[ "${_idx}" == "${L}" ]]; then
+        # match same system prefix (smd:<system>:...)
+        if [[ "${_name}" == "smd:${SYS}:"* || "${_name}" == "smd:${SYS}" ]]; then
+          _found=1
+          break
+        fi
+      fi
+    done
+    if [[ "${_found}" -eq 1 ]]; then
+      echo "[smd-submit-new] SKIP queued (index present for same system): ${RUN} (idx ${L})" >&2
+      continue
+    fi
+  fi
   
   # Step-based completion only
   IS_DONE=0
