@@ -196,13 +196,14 @@ fi
 ############################
 SRC_TOP="${BUILD_DIR}/topol.top"
 RUN_TOP="${run_root}/topol.top"
-SRC_TOP="${SRC_TOP}" BUILD_DIR="${BUILD_DIR}" RUN_TOP="${RUN_TOP}" ANCHOR_ITP="${anchor_itp}" POSRE_ITP="${POSRE_ITP}" python3 - <<'PY'
+SRC_TOP="${SRC_TOP}" BUILD_DIR="${BUILD_DIR}" RUN_TOP="${RUN_TOP}" ANCHOR_ITP="${anchor_itp}" POSRE_ITP="${POSRE_ITP}" ROOT_DIR="${ROOT}" python3 - <<'PY'
 import os, re
 src_top   = os.environ["SRC_TOP"]
 build_dir = os.environ["BUILD_DIR"]
 run_top   = os.environ["RUN_TOP"]
 anchor_itp= os.environ["ANCHOR_ITP"]
 posre_itp = os.environ["POSRE_ITP"]
+root_dir  = os.environ["ROOT_DIR"]
 anchor_base = os.path.basename(anchor_itp)
 
 txt=open(src_top,"r").read()
@@ -215,7 +216,21 @@ for line in lines:
         rewritten.append(line); continue
     inc = m.group(1)
     cand = os.path.join(build_dir, inc)
-    rewritten.append(f'#include "{cand}"' if os.path.isfile(cand) else line)
+    if os.path.isfile(cand):
+        # If the include exists in build_dir, make it absolute to avoid CWD sensitivity
+        rewritten.append(f'#include "{os.path.abspath(cand)}"')
+    else:
+        # Try resolving relative include against repo root
+        inc_clean = inc[2:] if inc.startswith("./") else inc
+        root_cand = os.path.join(root_dir, inc_clean)
+        if os.path.isfile(root_cand):
+            rewritten.append(f'#include "{os.path.abspath(root_cand)}"')
+        else:
+            # Last resort: keep line but normalize leading ./ to avoid odd relative prefixes
+            if inc.startswith("./"):
+                rewritten.append(f'#include "{inc_clean}"')
+            else:
+                rewritten.append(line)
 
 out=[]; inserted=False
 for line in rewritten:
@@ -335,6 +350,10 @@ if ! [[ "${nsteps}" =~ ^[0-9]+$ ]] || [[ "${nsteps}" -le 0 ]]; then
   exit 2
 fi
 
+# Save expected nsteps for completion checking
+echo "${nsteps}" > expected_nsteps.txt
+echo "[smd-runner] Expected nsteps: ${nsteps} (saved to expected_nsteps.txt)"
+
 
 ############################
 # Final pull.mdp (Option B: ALL atoms, 10 ps stride)
@@ -438,26 +457,65 @@ PY
 )
 NTMPI="${MDR[0]}"; NTOMP="${MDR[1]}"; NB="${MDR[2]}"; BONDED="${MDR[3]}"; PME="${MDR[4]}"; UPDATE="${MDR[5]}"; NPME="${MDR[6]}"; NTOMP_PME="${MDR[7]}"
 
-# Build args list (runner supplies -v and -deffnm pull; submitters set only the base command)
-mdargs=( -v -deffnm pull )
-[[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
-[[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
-[[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
-[[ -n "${BONDED}"     ]] && mdargs+=( -bonded "${BONDED}" )
-[[ -n "${PME}"        ]] && mdargs+=( -pme "${PME}" )
-[[ -n "${UPDATE}"     ]] && mdargs+=( -update "${UPDATE}" )
-[[ -n "${NPME}"       ]] && mdargs+=( -npme "${NPME}" )
-[[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
-
-# -maxh from job script (computed or exported by submitter) with a small guard
-if [[ -n "${MAXH_HOURS:-}" ]]; then
-  mdargs+=( -maxh "${MAXH_HOURS}" )
-fi
-
+## Build args list (runner supplies -v and -deffnm pull; submitters set only the base command)
+# We'll decide CPU/GPU mode after determining GMX_CMD and then append flags accordingly.
 
 # Decide mdrun command: CPU mode can export GMX_CMD="srun gmx_mpi mdrun"
 # Default to standard gmx mdrun if not provided by submitter
 GMX_CMD="${GMX_CMD:-gmx mdrun}"
+
+# Determine mode from GMX_CMD
+CPU_MODE=0
+if [[ "${GMX_CMD}" == *"gmx_mpi mdrun"* ]]; then
+  CPU_MODE=1
+fi
+
+# Base mdargs
+mdargs=( -v -deffnm pull )
+
+# Check for checkpoint (restart scenario)
+if [[ -f "pull.cpt" ]]; then
+  echo "[smd-runner] Found checkpoint pull.cpt; continuing from restart"
+  # For SMD/pull code, also ensure we continue writing pull traces consistently
+  mdargs+=( -cpi pull.cpt -px pull_pullx.xvg -pf pull_pullf.xvg )
+  # Mark this as a restart (increment counter)
+  RESTART_NUM="${RESTART_COUNT:-0}"
+  touch ".restart_${RESTART_NUM}"
+  echo "[smd-runner] Created restart marker: .restart_${RESTART_NUM}"
+fi
+
+if [[ ${CPU_MODE} -eq 1 ]]; then
+  echo "[smd-runner] Detected CPU mode (GMX_CMD contains gmx_mpi). Omitting -ntmpi/-ntomp and GPU offload flags."
+  # Optionally set OpenMP threads if not provided; align with Slurm cpus-per-task
+  if [[ -z "${OMP_NUM_THREADS:-}" && -n "${SLURM_CPUS_PER_TASK:-}" ]]; then
+    export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+    echo "[smd-runner] OMP_NUM_THREADS=${OMP_NUM_THREADS} (from SLURM_CPUS_PER_TASK)"
+  fi
+  # Do NOT append -ntmpi/-ntomp or any GPU offload flags in CPU mode
+else
+  # GPU/default mode: honor config flags
+  [[ -n "${NTMPI}"      ]] && mdargs+=( -ntmpi "${NTMPI}" )
+  [[ -n "${NTOMP}"      ]] && mdargs+=( -ntomp "${NTOMP}" )
+  [[ -n "${NB}"         ]] && mdargs+=( -nb "${NB}" )
+  [[ -n "${BONDED}"     ]] && mdargs+=( -bonded "${BONDED}" )
+  [[ -n "${PME}"        ]] && mdargs+=( -pme "${PME}" )
+  [[ -n "${UPDATE}"     ]] && mdargs+=( -update "${UPDATE}" )
+  [[ -n "${NPME}"       ]] && mdargs+=( -npme "${NPME}" )
+  [[ -n "${NTOMP_PME}"  ]] && mdargs+=( -ntomp_pme "${NTOMP_PME}" )
+fi
+
+# -maxh from job script (computed or exported by submitter) with a buffer for resubmission logic
+if [[ -n "${MAXH_HOURS:-}" ]]; then
+  # Subtract 10 min (0.167 hrs) to leave time for completion check and resubmit
+  MAXH_ADJUSTED=$(python3 - <<PY
+h=float("${MAXH_HOURS}")
+adjusted=max(0.5, h-0.167)
+print(f"{adjusted:.2f}")
+PY
+)
+  mdargs+=( -maxh "${MAXH_ADJUSTED}" )
+  echo "[smd-runner] Using -maxh ${MAXH_ADJUSTED} (original: ${MAXH_HOURS}, buffer: 10 min)"
+fi
 
 # Dry-run switch
 if [[ "${DRY_RUN:-}" == "1" ]]; then

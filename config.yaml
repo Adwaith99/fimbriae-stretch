@@ -8,9 +8,11 @@ globals:
   slurm:
     partition: default
     gpus_per_node: h100:4
-    cpus_per_task: 48
+    cpus_per_task: 8
+    nodes : 10
+    ntasks_per_node : 24
     time_limit: "1-00:00:00"
-    array_cap: 3
+    array_cap: 5
     gromacs_module: "arch/avx512 StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
 
   # Position restraints used in build stages (scaled per stage)

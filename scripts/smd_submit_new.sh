@@ -24,25 +24,40 @@ USE_LEDGER="${USE_LEDGER:-0}"             # Set USE_LEDGER=1 to prevent resubmis
 [[ -f "${MANIFEST}" ]] || { echo "[smd-submit-new] ERROR: manifest not found: ${MANIFEST}" >&2; exit 2; }
 [[ -f "${JOB_SCRIPT}" ]] || { echo "[smd-submit-new] ERROR: job script not found: ${JOB_SCRIPT}" >&2; exit 2; }
 
-# Read Slurm defaults from config (partition, gpus, cpus, nodes, ntasks_per_node)
+# Read Slurm defaults from config (partition, gpus, cpus, nodes, ntasks_per_node, max_wall_hours)
 readarray -t CFG < <(python3 - <<'PY'
 import yaml
 cfg=yaml.safe_load(open("config.yaml"))
-s=cfg["globals"]["slurm"]
+g=cfg.get("globals",{})
+s=g.get("slurm",{})
 print(s.get("partition", "default"))
 print(s.get("gpus_per_node", ""))
 print(s.get("cpus_per_task", 8))
 print(s.get("nodes", 1))
 print(s.get("ntasks_per_node", 1))
 print(s.get("gromacs_module", ""))
+print(s.get("array_cap", 5))
+print(g.get("max_wall_hours", 168))
 PY
 )
 PART="${CFG[0]}"
-GRES_SPEC="${CFG[1]}"
+GPU_SPEC_RAW="${CFG[1]}"
 CPUS="${CFG[2]}"
 NODES="${CFG[3]}"
 NTASKS_PER_NODE="${CFG[4]}"
 GMX_MOD="${CFG[5]}"
+ARRAY_CAP_DEFAULT="${CFG[6]}"
+MAX_WALL_HOURS="${CFG[7]}"
+
+# Derive numeric gpus-per-node from GPU_SPEC_RAW (supports formats like "h100:4" or "4")
+GPUS_PER_NODE_COUNT=""
+if [[ -n "${GPU_SPEC_RAW}" ]]; then
+  if [[ "${GPU_SPEC_RAW}" =~ :([0-9]+)$ ]]; then
+    GPUS_PER_NODE_COUNT="${BASH_REMATCH[1]}"
+  elif [[ "${GPU_SPEC_RAW}" =~ ^[0-9]+$ ]]; then
+    GPUS_PER_NODE_COUNT="${GPU_SPEC_RAW}"
+  fi
+fi
 
 # CPU mode toggle
 CPU_MODE="${CPU:-0}"
@@ -65,16 +80,134 @@ fi
 # Parse manifest rows to TSV (TAB-separated!)
 tmpdir=$(mktemp -d); trap 'rm -rf "${tmpdir}"' EXIT
 rows="${tmpdir}/rows.tsv"
-# lineno  system  variant  replicate  speed  perf  target  start_id  array_cap
+# lineno  system  variant  replicate  speed  dt_ps  target  start_id  array_cap
 awk -F, -v OFS='\t' 'NR>1{
   gsub(/^"|"$/, "", $0);
-  print NR, $1, $2, $3, $4, $9, $7, $13, $15
+  print NR, $1, $2, $3, $4, $6, $7, $13, $15
 }' "${MANIFEST}" > "${rows}"
+
+############################
+# Build a set of queued array tasks from SLURM (avoid double-queuing)
+# Key = "<JOB_NAME>|<ARRAY_INDEX>" (e.g., "smd:fimA_WT:v0.020|17")
+############################
+declare -A queued              # keyed by JNAME|index when full job name present
+declare -A queued_index        # keyed by plain array index (also used for 'sq' PD parsing)
+
+# Prefer site alias 'sq' if available: parse PD/R (pending/running) array ranges from JOBID column
+if command -v sq >/dev/null 2>&1; then
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] using 'sq' to detect pending/running array indices" >&2
+  # Parse sq output: extract both JOBID and NAME, then expand ranges with Python
+  while IFS='|' read -r jobid_range jname; do
+    [[ -z "$jobid_range" ]] && continue
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq found PD/R array: $jobid_range (name=$jname)" >&2
+    # Expand the range with Python (handles both bracketed ranges and single indices)
+    while read -r idx; do
+      [[ -z "$idx" ]] && continue
+      queued["$jname|$idx"]=1
+      queued_index["$idx"]=1
+      [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] sq pending/running: $jname|$idx" >&2
+    done < <(python3 - "$jobid_range" <<'PY'
+import sys,re
+jobid=sys.argv[1]
+# Check for bracket notation first: JOBID_[range]
+m=re.search(r'_\[(.+)', jobid)
+if m:
+    payload=m.group(1).rstrip(']')
+    for tok in payload.split(','):
+        core=tok.split('%',1)[0]
+        if re.match(r'^\d+-\d+$', core):
+            a,b=map(int, core.split('-'))
+            if a<=b:
+                for k in range(a,b+1):
+                    print(k)
+        elif re.match(r'^\d+$', core):
+            print(int(core))
+else:
+    # No brackets: check for single index like JOBID_17
+    m2=re.search(r'_(\d+)$', jobid)
+    if m2:
+        print(int(m2.group(1)))
+PY
+    )
+  done < <(sq 2>&1 | awk '($5=="PD" || $5=="R") && $4~/^smd:/ {print $1"|"$4}')
+fi
+
+# Also query squeue for exact task indices and names
+if command -v squeue >/dev/null 2>&1; then
+  u="${USER:-$(id -un 2>/dev/null)}"
+  # Try per-task first; filter PD and R states
+  got_any=0
+  while read -r jname arrayidx state; do
+    [[ "$jname" =~ ^smd: ]] || continue
+    [[ "$arrayidx" =~ ^[0-9]+$ ]] || continue
+    [[ "$state" =~ ^(PD|R)$ ]] || continue
+    queued["$jname|$arrayidx"]=1; got_any=1
+    queued_index["$arrayidx"]=1
+    [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued task: $jname|$arrayidx (state=$state)" >&2
+  done < <(squeue -h -u "$u" -o "%j %i %T" 2>/dev/null)
+
+  if [[ "${got_any}" -eq 0 ]]; then
+    # Fallback: parse job array ranges from the JOBID field like 436236_[17-21%5,30,33-35]
+    while read -r jobid jname; do
+      [[ "$jname" =~ ^smd: ]] || continue
+      # Extract content inside brackets []
+      rng=$(python3 - "$jobid" <<'PY'
+import re,sys
+jobid=sys.argv[1]
+m=re.search(r'_\[(.+?)\]$', jobid)
+print(m.group(1) if m else "")
+PY
+)
+      [[ -z "$rng" ]] && continue
+      # Split by comma and expand numeric ranges; strip %limits
+      IFS=',' read -ra parts <<< "$rng"
+      for p in "${parts[@]}"; do
+        p_no=${p%%\%*}
+        if [[ "$p_no" =~ ^[0-9]+-[0-9]+$ ]]; then
+          IFS='-' read -r a b <<< "$p_no"
+          for ((k=a; k<=b; k++)); do
+            queued["$jname|$k"]=1
+            queued_index["$k"]=1
+            [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued range: $jname|$k" >&2
+          done
+        elif [[ "$p_no" =~ ^[0-9]+$ ]]; then
+          queued["$jname|$p_no"]=1
+          queued_index["$p_no"]=1
+          [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] queued single: $jname|$p_no" >&2
+        fi
+      done
+    done < <(squeue -h -u "$u" -o "%A %j" 2>/dev/null)
+  fi
+fi
+if [[ -n "${SMD_DEBUG:-}" ]]; then
+  # Print a compact sorted list of pending/queued indices detected
+  if [[ "${!queued_index[@]}" ]]; then
+    mapfile -t _qtmp < <(for k in "${!queued_index[@]}"; do echo "$k"; done | sort -n)
+    echo "[smd-submit-new][dbg] final queued indices: ${_qtmp[*]}" >&2
+  else
+    echo "[smd-submit-new][dbg] no queued indices detected" >&2
+  fi
+fi
+declare -A system_perf
+readarray -t PERF_MAP < <(python3 - <<'PY'
+import yaml
+cfg = yaml.safe_load(open("config.yaml"))
+global_perf = float(cfg.get("globals", {}).get("perf_ns_per_day", 10.0))
+for sys in cfg.get("systems", []):
+    name = sys.get("name")
+    perf = float(sys.get("perf_ns_per_day", global_perf))
+    print(f"{name}:{perf}")
+PY
+)
+for entry in "${PERF_MAP[@]}"; do
+  IFS=':' read -r sname sperf <<< "${entry}"
+  system_perf["${sname}"]="${sperf}"
+done
 
 # Group NEW rows by (system, speed)
 declare -A grp_idxs grp_time grp_cap
 BAD=0
-while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
+while IFS=$'\t' read -r L SYS VAR REP SPD DT TGT START CAP; do
   # Skip empty lines defensively
   [[ -z "${L}" ]] && continue
 
@@ -85,45 +218,115 @@ while IFS=$'\t' read -r L SYS VAR REP SPD PERF TGT START CAP; do
     continue
   fi
 
+  # Lookup perf from config for this system
+  PERF="${system_perf[${SYS}]:-10.0}"
+
   # Validate required numeric fields
-  if [[ -z "${SPD}" || -z "${TGT}" || -z "${PERF}" ]]; then
-    echo "[smd-submit-new] WARN: skipping line ${L} (missing numeric: speed='${SPD}', target='${TGT}', perf='${PERF}')" >&2
+  if [[ -z "${SPD}" || -z "${TGT}" ]]; then
+    echo "[smd-submit-new] WARN: skipping line ${L} (missing numeric: speed='${SPD}', target='${TGT}')" >&2
     BAD=$((BAD+1))
     continue
   fi
 
   # Numeric sanity
   if ! python3 - <<PY >/dev/null 2>&1
-spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}")
-assert spd>0 and tgt>0 and perf>0
+spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); dt=float("${DT:-0.002}")
+assert spd>0 and tgt>0 and perf>0 and dt>0
 PY
   then
-    echo "[smd-submit-new] WARN: skipping line ${L} (invalid numbers: speed=${SPD}, target=${TGT}, perf=${PERF})" >&2
+    echo "[smd-submit-new] WARN: skipping line ${L} (invalid numbers: speed=${SPD}, target=${TGT}, perf=${PERF}, dt=${DT})" >&2
     BAD=$((BAD+1))
     continue
   fi
 
-  # Check if run is truly DONE on disk
+  # Compute job name and run directory
+  JNAME="smd:${SYS}:v$(printf "%0.3f" "${SPD}")"
   RUN="smd/${SYS}/${VAR}/v$(printf "%0.3f" "${SPD}")/rep${REP}/${START}"
-  IS_DONE=0
-  if [[ -f "${RUN}/pull.xtc" && -f "${RUN}/pull.log" ]]; then
-    if grep -q "Finished mdrun" "${RUN}/pull.log" 2>/dev/null; then
-      IS_DONE=1
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] row=${L} JNAME=${JNAME} RUN=${RUN}" >&2
+  # Skip if queued: check exact job name + index match
+  if [[ -n "${queued[${JNAME}|${L}]:-}" ]]; then
+    echo "[smd-submit-new] SKIP queued: ${RUN} (job ${JNAME} idx ${L})" >&2
+    continue
+  fi
+  # Fallback: if that array index is queued somewhere, check whether it's queued
+  # for the same system (to avoid cross-project collisions due to truncated job names).
+  if [[ -n "${queued_index[${L}]:-}" ]]; then
+    _found=0
+    for _k in "${!queued[@]}"; do
+      _name="${_k%%|*}"
+      _idx="${_k##*|}"
+      if [[ "${_idx}" == "${L}" ]]; then
+        # match same system prefix (smd:<system>:...)
+        if [[ "${_name}" == "smd:${SYS}:"* || "${_name}" == "smd:${SYS}" ]]; then
+          _found=1
+          break
+        fi
+      fi
+    done
+    if [[ "${_found}" -eq 1 ]]; then
+      echo "[smd-submit-new] SKIP queued (index present for same system): ${RUN} (idx ${L})" >&2
+      continue
     fi
   fi
   
+  # Step-based completion only
+  IS_DONE=0
+  LAST_STEP=""
+  EXPECTED_STEPS=""
+  if [[ -f "${RUN}/pull.log" ]]; then
+    LAST_STEP=$(LOG_PATH="${RUN}/pull.log" python3 - <<'PY'
+import os,re
+log=os.environ.get('LOG_PATH','')
+max_step=0
+try:
+  with open(log) as f:
+    for line in f:
+      m=re.search(r'(?:^Step\s+|Statistics over\s+)(\d+)', line)
+      if m:
+        v=int(m.group(1))
+        if v>max_step:
+          max_step=v
+except Exception:
+  pass
+print(max_step if max_step>0 else "")
+PY
+)
+  fi
+  if [[ -f "${RUN}/expected_nsteps.txt" ]]; then
+    EXPECTED_STEPS=$(cat "${RUN}/expected_nsteps.txt")
+  fi
+  # Fallback: parse nsteps from pull.mdp if expected file is missing
+  if [[ -z "${EXPECTED_STEPS}" && -f "${RUN}/pull.mdp" ]]; then
+    EXPECTED_STEPS=$(awk 'tolower($1)=="nsteps"{print $3}' "${RUN}/pull.mdp" | tail -n1)
+  fi
+  # Only do arithmetic if both values are integers
+  if [[ "${LAST_STEP}" =~ ^[0-9]+$ && "${EXPECTED_STEPS}" =~ ^[0-9]+$ ]]; then
+    if (( LAST_STEP >= EXPECTED_STEPS )); then
+      IS_DONE=1
+    fi
+  fi
+  # No longer rely on 'Finished mdrun' to mark completion (handles maxh terminations correctly)
+  [[ -n "${SMD_DEBUG:-}" ]] && echo "[smd-submit-new][dbg] steps last=${LAST_STEP} expected=${EXPECTED_STEPS} done=${IS_DONE}" >&2
+
   if [[ "${IS_DONE}" -eq 1 ]]; then
     echo "[smd-submit-new] SKIP completed: ${RUN}" >&2
     continue
   fi
-  
-  # Not completed = submit (even if in ledger or has partial files)
-  # User manages canceling active jobs manually before resubmitting
-  if [[ -f "${RUN}/pull.log" ]]; then
-    echo "[smd-submit-new] RESUBMIT incomplete/failed: ${RUN}" >&2
-  elif [[ -n "${submitted[$KEY]:-}" ]]; then
-    echo "[smd-submit-new] RESUBMIT (was in ledger but not done): ${RUN}" >&2
+
+  # Determine restart status
+  RESTART_MSG="start from scratch"
+  if [[ -f "${RUN}/pull.cpt" ]]; then
+    if [[ "${LAST_STEP}" =~ ^[0-9]+$ && "${EXPECTED_STEPS}" =~ ^[0-9]+$ ]]; then
+      RESTART_MSG="restart from checkpoint (step ${LAST_STEP} of ${EXPECTED_STEPS})"
+    elif [[ "${LAST_STEP}" =~ ^[0-9]+$ ]]; then
+      RESTART_MSG="restart from checkpoint (step ${LAST_STEP})"
+    else
+      RESTART_MSG="restart from checkpoint (step unknown)"
+    fi
   fi
+
+  # Not completed = submit (even if in ledger or has partial files)
+  echo "[smd-submit-new] SUBMIT: ${RUN} -- ${RESTART_MSG}" >&2
 
   GRP="${SYS}|${SPD}"
   # Collect sparse array indices (CSV line numbers)
@@ -133,12 +336,34 @@ PY
     grp_idxs[$GRP]="${L}"
   fi
 
-  # walltime hours per row = (target/speed)/perf * 24 * SAFETY
-  ht=$(python3 - <<PY
-import math
+  # walltime hours per row: use REMAINING steps for restarts, or full simulation for fresh starts
+  ht=$(RUN="${RUN}" LAST_STEP="${LAST_STEP}" EXPECTED_STEPS="${EXPECTED_STEPS}" python3 - <<PY
+import math, os
 spd=float("${SPD}"); tgt=float("${TGT}"); perf=float("${PERF}"); pad=float("${SAFETY}")
-ns=tgt/spd; days=(ns/perf)
-print("{:.3f}".format(days*24*pad))
+max_hrs=float("${MAX_WALL_HOURS}")
+dt_ps=float("${DT}")
+
+run=os.environ.get("RUN","")
+last_step_str=os.environ.get("LAST_STEP","")
+expected_str=os.environ.get("EXPECTED_STEPS","")
+
+# If we have both last_step and expected, compute remaining time
+if last_step_str and last_step_str.isdigit() and expected_str and expected_str.isdigit():
+    last_step=int(last_step_str)
+    expected=int(expected_str)
+    remaining_steps=max(0, expected - last_step)
+    # Convert steps to ns: steps * dt_ps / 1000
+    ns_rem = (remaining_steps * dt_ps) / 1000.0
+    days = ns_rem / perf
+    h = days * 24 * pad
+else:
+    # Fresh start: use full target extension
+    ns = tgt / spd
+    days = ns / perf
+    h = days * 24 * pad
+
+h = max(1.0, min(h, max_hrs))
+print("{:.3f}".format(h))
 PY
 )
   cur="${grp_time[$GRP]:-0.0}"
@@ -147,7 +372,8 @@ a=float("${cur}"); b=float("${ht}")
 print("{:.3f}".format(max(a,b)))
 PY
 )
-  grp_cap[$GRP]="${CAP:-5}"
+  # Use array cap from config (ignore manifest column); fall back to 5 if not set
+  grp_cap[$GRP]="${ARRAY_CAP_DEFAULT:-5}"
 done < "${rows}"
 
 if [[ "${BAD}" -gt 0 ]]; then
@@ -205,8 +431,10 @@ PY
     echo "[smd-submit-new] CPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} nodes=${NODES} ntasks/node=${NTASKS_PER_NODE}"
   else
     # GPU mode
-    [[ -n "${GRES_SPEC}" ]] && SBATCH_ARGS+=(--gres="gpu:${GRES_SPEC}")
-    echo "[smd-submit-new] GPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} gres=${GRES_SPEC}"
+    if [[ -n "${GPUS_PER_NODE_COUNT}" ]]; then
+      SBATCH_ARGS+=(--gpus-per-node="${GPUS_PER_NODE_COUNT}")
+    fi
+    echo "[smd-submit-new] GPU submit: ${JNAME} rows=${IDXS} time=${TSTR} cap=${CAP} gpus-per-node=${GPUS_PER_NODE_COUNT}"
   fi
 
   if [[ -n "${SLURM_TEST_ONLY:-}" ]]; then
