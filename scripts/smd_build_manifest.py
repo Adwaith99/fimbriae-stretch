@@ -48,6 +48,14 @@ for sysent in cfg["systems"]:
         anchor_chain = var["anchor"]["chain"]
         speeds = var.get("speeds", default_speeds)
         n_reps = int(var.get("n_reps", n_reps_default))
+        # variant-specific override for target extension (nm)
+        v_te = var.get("target_extension_nm", None)
+        if v_te is None:
+            v_te = var.get("target_extension", None)
+        if v_te is None:
+            target_ext_variant = float(target_ext)
+        else:
+            target_ext_variant = float(v_te)
 
         starts_csv = os.path.join(STARTS_DIR, f"{system}__{variant}.csv")
         if not os.path.isfile(starts_csv):
@@ -113,7 +121,7 @@ for sysent in cfg["systems"]:
                         "speed_nm_per_ns": speed,
                         "k_kj_mol_nm2": k_kj,
                         "dt_ps": dt_ps,
-                        "target_extension_nm": target_ext,
+                        "target_extension_nm": target_ext_variant,
                         "axis": axis,
                         "perf_ns_per_day": perf,
                         "start_time_ps": st["start_time_ps"],
