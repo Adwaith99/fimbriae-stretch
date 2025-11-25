@@ -246,10 +246,10 @@ open(run_top,"w").write("\n".join(out)+"\n")
 print(f"[smd-runner] Wrote run-local topol: {run_top}")
 PY
 
-############################
-# Probe grompp to get SIGNED initial distance; derive signed rate
-############################
-vec="1 0 0"  # always +x; sign is carried by init and rate
+# No probe grompp: let GROMACS compute the initial distance at grompp by
+# enabling pull-coord1-start in the mdp. This removes an expensive probe
+# grompp and avoids parsing logs for a signed distance. We still compute
+# nsteps based on the (positive) base_rate and the target extension magnitude.
 
 # Base (positive) rate in nm/ps, fixed decimal
 base_rate=$(python3 - <<PY
@@ -258,71 +258,9 @@ print("{:.6f}".format(rate))
 PY
 )
 
-# Minimal probe mdp
-cat > pull_probe.mdp <<PROBE
-integrator              = md
-dt                      = ${dt_ps}
-nsteps                  = 10
-tcoupl                  = no
-pcoupl                  = no
-cutoff-scheme           = Verlet
-coulombtype             = PME
-rcoulomb                = 1.2
-vdwtype                 = cutoff
-vdw-modifier            = Force-switch
-rlist                   = 1.2
-rvdw                    = 1.2
-rvdw-switch             = 1.0
-pbc                     = xyz
-constraints             = h-bonds
-constraint-algorithm    = lincs
-
-pull                    = yes
-pull-ncoords            = 1
-pull-ngroups            = 2
-pull-group1-name        = Anchor
-pull-group2-name        = Pulled
-pull-coord1-type        = umbrella
-pull-coord1-geometry    = direction-periodic
-pull-coord1-vec         = ${vec}
-pull-coord1-groups      = 1 2
-pull-coord1-init        = 0.000000
-pull-coord1-rate        = ${base_rate}
-PROBE
-
-# Run probe grompp from BUILD_DIR; capture log
-pushd "${BUILD_DIR}" >/dev/null
-gmx grompp \
-  -f "${run_root}/pull_probe.mdp" \
-  -c "${run_root}/start.gro" \
-  -r "${run_root}/start.gro" \
-  -p "${run_root}/topol.top" \
-  -n "${run_root}/index.ndx" \
-  -o "${run_root}/probe.tpr" \
-  2>&1 | tee "${run_root}/probe.grompp.log"
-popd >/dev/null
-
-# Extract signed "distance at start" for group 2
-signed_init=$(awk '/^ *2[[:space:]]/{for(i=1;i<=NF;i++){if($i=="nm"){print $(i-1); exit}}}' "${run_root}/probe.grompp.log")
-if [[ -z "${signed_init}" ]]; then
-  signed_init=$(awk '/distance at start/{for(i=1;i<=NF;i++){if($i=="nm"){print $(i-1); exit}}}' "${run_root}/probe.grompp.log")
-fi
-if [[ -z "${signed_init}" ]]; then
-  echo "[smd-runner] ERROR: could not extract signed start distance from probe.grompp.log" >&2
-  exit 2
-fi
-
-init_signed=$(python3 - <<PY
-v=float("${signed_init}")
-print("{:.6f}".format(v))
-PY
-)
-rate_signed=$(python3 - <<PY
-base=float("${base_rate}"); v=float("${signed_init}")
-print("{:.6f}".format(-base if v<0.0 else base))
-PY
-)
-echo "[smd-runner] grompp start distance (signed): ${init_signed} nm; pull rate: ${rate_signed} nm/ps"
+# Pull vector (direction): keep +x as before; GROMACS will determine the
+# signed initial distance when pull-coord1-start = yes is used in the mdp.
+vec="1 0 0"
 
 ############################
 # Steps based on magnitude only (uses base_rate)
@@ -401,8 +339,8 @@ pull-coord1-type        = umbrella
 pull-coord1-geometry    = direction-periodic
 pull-coord1-vec         = ${vec}          ; fixed axis (+x)
 pull-coord1-groups      = 1 2
-pull-coord1-init        = ${init_signed}  ; SIGNED from probe grompp
-pull-coord1-rate        = ${rate_signed}  ; SIGNED, same sign as init
+pull-coord1-start      = yes               ; let grompp compute initial distance
+pull-coord1-rate        = ${base_rate}     ; positive base rate (nm/ps)
 pull-coord1-k           = ${k_kj}
 pull-print-components   = yes
 
@@ -546,11 +484,10 @@ d = {
   "start_time_ps": float("${start_time_ps}"),
   "axis": "${axis}",
   "speed_nm_per_ns": float("${speed_nm_per_ns}"),
-  "rate_nm_per_ps_signed": float("${rate_signed}"),
+  "rate_nm_per_ps": float("${base_rate}"),
   "dt_ps": float("${dt_ps}"),
   "k_kj_mol_nm2": float("${k_kj}"),
   "target_extension_nm": float("${target_extension_nm}"),
-  "init_nm_signed": float("${init_signed}"),
   "nsteps": int("${nsteps}"),
   "topol": "topol.top",
   "posre_itp": "${POSRE_ITP}",
