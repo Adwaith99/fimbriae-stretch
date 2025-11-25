@@ -25,7 +25,21 @@ FIELDNAMES = [
     "start_id","anchor_chain","array_cap"
 ]
 
+import argparse
+
+parser = argparse.ArgumentParser(description="Build SMD manifest from sampled starts")
+parser.add_argument("--force", action="store_true", help="regenerate manifest for all systems (ignore existing manifest)")
+args = parser.parse_args()
+
 rows = []
+existing = {}
+if os.path.isfile(OUT) and not args.force:
+    # load existing manifest to preserve start assignments
+    with open(OUT) as f:
+        r = csv.DictReader(f)
+        for rec in r:
+            key = (rec['system'], rec['variant'], rec['replicate'], rec['speed_nm_per_ns'])
+            existing[key] = rec
 for sysent in cfg["systems"]:
     system = sysent["name"]
     perf   = float(sysent.get("perf_ns_per_day", 50.0))
@@ -34,6 +48,14 @@ for sysent in cfg["systems"]:
         anchor_chain = var["anchor"]["chain"]
         speeds = var.get("speeds", default_speeds)
         n_reps = int(var.get("n_reps", n_reps_default))
+        # variant-specific override for target extension (nm)
+        v_te = var.get("target_extension_nm", None)
+        if v_te is None:
+            v_te = var.get("target_extension", None)
+        if v_te is None:
+            target_ext_variant = float(target_ext)
+        else:
+            target_ext_variant = float(v_te)
 
         starts_csv = os.path.join(STARTS_DIR, f"{system}__{variant}.csv")
         if not os.path.isfile(starts_csv):
@@ -67,25 +89,48 @@ for sysent in cfg["systems"]:
         idx = 0
         for speed in speeds:
             for rep in range(1, n_reps+1):
-                st = chosen[idx]
-                idx += 1
-                rows.append({
-                    "system": system,
-                    "variant": variant,
-                    "replicate": rep,
-                    "speed_nm_per_ns": speed,
-                    "k_kj_mol_nm2": k_kj,
-                    "dt_ps": dt_ps,
-                    "target_extension_nm": target_ext,
-                    "axis": axis,
-                    "perf_ns_per_day": perf,
-                    "start_time_ps": st["start_time_ps"],
-                    "final_tpr": st["final_tpr"],
-                    "final_xtc": st["final_xtc"],
-                    "start_id": st["start_id"],
-                    "anchor_chain": anchor_chain,
-                    "array_cap": array_cap
-                })
+                key = (system, variant, str(rep), str(speed))
+                if key in existing:
+                    # preserve previous assignment if source files still exist
+                    er = existing[key]
+                    # verify the referenced start still exists in manifests/starts CSV (best-effort)
+                    rows.append({
+                        "system": er["system"],
+                        "variant": er["variant"],
+                        "replicate": int(er["replicate"]),
+                        "speed_nm_per_ns": float(er["speed_nm_per_ns"]),
+                        "k_kj_mol_nm2": float(er.get("k_kj_mol_nm2", k_kj)),
+                        "dt_ps": float(er.get("dt_ps", dt_ps)),
+                        "target_extension_nm": float(er.get("target_extension_nm", target_ext)),
+                        "axis": er.get("axis", axis),
+                        "perf_ns_per_day": float(er.get("perf_ns_per_day", perf)),
+                        "start_time_ps": er.get("start_time_ps"),
+                        "final_tpr": er.get("final_tpr"),
+                        "final_xtc": er.get("final_xtc"),
+                        "start_id": er.get("start_id"),
+                        "anchor_chain": er.get("anchor_chain", anchor_chain),
+                        "array_cap": er.get("array_cap", array_cap)
+                    })
+                else:
+                    st = chosen[idx]
+                    idx += 1
+                    rows.append({
+                        "system": system,
+                        "variant": variant,
+                        "replicate": rep,
+                        "speed_nm_per_ns": speed,
+                        "k_kj_mol_nm2": k_kj,
+                        "dt_ps": dt_ps,
+                        "target_extension_nm": target_ext_variant,
+                        "axis": axis,
+                        "perf_ns_per_day": perf,
+                        "start_time_ps": st["start_time_ps"],
+                        "final_tpr": st["final_tpr"],
+                        "final_xtc": st["final_xtc"],
+                        "start_id": st["start_id"],
+                        "anchor_chain": anchor_chain,
+                        "array_cap": array_cap
+                    })
 
 with open(OUT, "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=FIELDNAMES)
