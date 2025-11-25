@@ -107,6 +107,10 @@ for s in cfg["systems"]:
         for v in s.get("variants", []):
             if v["id"]=="${variant}":
                 res=v["anchor"]["res"]; break
+
+# Variant-level option: optionally flip the sign of the pull rate
+# Look for `flip_pull_sign` under the matching system->variants entry in config.yaml
+FLIP_PULL=$(python3 - <<PY
 print(res if res is not None else "")
 PY
 )
@@ -119,6 +123,9 @@ fi
 # Variant-specific posre (run-local)
 ############################
 POSRE_ITP="${run_root}/posre_anchor_${system}_${variant}_chain_${anchor_chain}_${anchor_res_range}.itp"
+
+# Signed rate used in the mdp (positive or negative depending on FLIP_PULL)
+rate_signed=$(python3 - <<PY
 python3 - <<PY
 import re
 itp_path = r"""${anchor_itp}"""
@@ -131,8 +138,8 @@ if m:
 else:
     x=int(rng.strip()); lo=hi=x
 txt=open(itp_path).read()
-in_atoms=False; rows=[]
-for line in txt.splitlines():
+pull-coord1-start      = yes               ; let grompp compute initial distance
+pull-coord1-rate        = ${rate_signed}   ; base rate (nm/ps) possibly negated by variant flip
     s=line.strip()
     if not s or s.startswith(";"): continue
     if s.startswith("["):
@@ -484,7 +491,7 @@ d = {
   "start_time_ps": float("${start_time_ps}"),
   "axis": "${axis}",
   "speed_nm_per_ns": float("${speed_nm_per_ns}"),
-  "rate_nm_per_ps": float("${base_rate}"),
+  "rate_nm_per_ps": float("${rate_signed}"),
   "dt_ps": float("${dt_ps}"),
   "k_kj_mol_nm2": float("${k_kj}"),
   "target_extension_nm": float("${target_extension_nm}"),
