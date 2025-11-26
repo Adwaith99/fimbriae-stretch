@@ -97,20 +97,16 @@ if [[ ! -f "${anchor_itp}" ]]; then
   echo "[smd-runner] ERROR: anchor ITP not found: ${anchor_itp}" >&2
   exit 2
 fi
-
 anchor_res_range=$(python3 - <<PY
 import yaml
-cfg=yaml.safe_load(open("${ROOT}/config.yaml"))
+cfg=yaml.safe_load(open(r"${ROOT}/config.yaml"))
 res=None
-for s in cfg["systems"]:
-    if s["name"]=="${system}":
-        for v in s.get("variants", []):
-            if v["id"]=="${variant}":
-                res=v["anchor"]["res"]; break
-
-# Variant-level option: optionally flip the sign of the pull rate
-# Look for `flip_pull_sign` under the matching system->variants entry in config.yaml
-FLIP_PULL=$(python3 - <<PY
+for s in cfg.get("systems",[]):
+  if s.get("name")=="${system}":
+    for v in s.get("variants", []):
+      if v.get("id")=="${variant}":
+        res=v.get("anchor", {}).get("res")
+        break
 print(res if res is not None else "")
 PY
 )
@@ -123,9 +119,6 @@ fi
 # Variant-specific posre (run-local)
 ############################
 POSRE_ITP="${run_root}/posre_anchor_${system}_${variant}_chain_${anchor_chain}_${anchor_res_range}.itp"
-
-# Signed rate used in the mdp (positive or negative depending on FLIP_PULL)
-rate_signed=$(python3 - <<PY
 python3 - <<PY
 import re
 itp_path = r"""${anchor_itp}"""
@@ -134,29 +127,29 @@ rng = r"""${anchor_res_range}"""
 k = float(${k_kj})
 m=re.match(r'^\s*(\d+)\s*-\s*(\d+)\s*$', rng)
 if m:
-    lo,hi=sorted(map(int,m.groups()))
+  lo,hi=sorted(map(int,m.groups()))
 else:
-    x=int(rng.strip()); lo=hi=x
+  x=int(rng.strip()); lo=hi=x
 txt=open(itp_path).read()
-pull-coord1-start      = yes               ; let grompp compute initial distance
-pull-coord1-rate        = ${rate_signed}   ; base rate (nm/ps) possibly negated by variant flip
-    s=line.strip()
-    if not s or s.startswith(";"): continue
-    if s.startswith("["):
-        in_atoms = "atoms" in s
-        continue
-    if in_atoms:
-        parts=s.split()
-        if len(parts)>=6 and parts[0].isdigit() and parts[2].isdigit():
-            ai=int(parts[0]); resnr=int(parts[2])
-            if lo<=resnr<=hi: rows.append(ai)
+in_atoms=False; rows=[]
+for line in txt.splitlines():
+  s=line.strip()
+  if not s or s.startswith(";"): continue
+  if s.startswith("["):
+    in_atoms = "atoms" in s
+    continue
+  if in_atoms:
+    parts=s.split()
+    if len(parts)>=6 and parts[0].isdigit() and parts[2].isdigit():
+      ai=int(parts[0]); resnr=int(parts[2])
+      if lo<=resnr<=hi: rows.append(ai)
 if not rows:
-    raise SystemExit(f"[smd-runner] ERROR: no atoms in range {rng} in {itp_path}")
+  raise SystemExit(f"[smd-runner] ERROR: no atoms in range {rng} in {itp_path}")
 with open(out_path,"w") as f:
-    f.write("[ position_restraints ]\n")
-    f.write("; ai  funct  fc_x   fc_y   fc_z\n")
-    for ai in rows:
-        f.write(f"{ai:6d}   1   {k:.3f}  {k:.3f}  {k:.3f}\n")
+  f.write("[ position_restraints ]\n")
+  f.write("; ai  funct  fc_x   fc_y   fc_z\n")
+  for ai in rows:
+    f.write(f"{ai:6d}   1   {k:.3f}  {k:.3f}  {k:.3f}\n")
 print(f"[smd-runner] Wrote posre: {out_path} ({len(rows)} atoms; k={k:.3f})")
 PY
 
@@ -269,6 +262,33 @@ PY
 # signed initial distance when pull-coord1-start = yes is used in the mdp.
 vec="1 0 0"
 
+# Variant-level option: optionally flip the sign of the pull rate
+# Look for `flip_pull_sign` under the matching system->variants entry in config.yaml
+FLIP_PULL=$(python3 - <<PY
+import yaml
+cfg=yaml.safe_load(open(r"${ROOT}/config.yaml"))
+flip=False
+for s in cfg.get('systems',[]):
+  if s.get('name')=="${system}":
+    for v in s.get('variants',[]):
+      if v.get('id')=="${variant}":
+        flip = bool(v.get('flip_pull_sign', False))
+        break
+print('1' if flip else '0')
+PY
+)
+
+# Signed rate used in the mdp (positive or negative depending on FLIP_PULL)
+rate_signed=$(python3 - <<PY
+base=float("${base_rate}")
+flip='${FLIP_PULL}'
+if flip=='1':
+  print("{:.6f}".format(-base))
+else:
+  print("{:.6f}".format(base))
+PY
+)
+
 ############################
 # Steps based on magnitude only (uses base_rate)
 ############################
@@ -347,7 +367,7 @@ pull-coord1-geometry    = direction-periodic
 pull-coord1-vec         = ${vec}          ; fixed axis (+x)
 pull-coord1-groups      = 1 2
 pull-coord1-start      = yes               ; let grompp compute initial distance
-pull-coord1-rate        = ${base_rate}     ; positive base rate (nm/ps)
+pull-coord1-rate        = ${rate_signed}   ; base rate (nm/ps) possibly negated by variant flip
 pull-coord1-k           = ${k_kj}
 pull-print-components   = yes
 
