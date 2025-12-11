@@ -256,12 +256,22 @@ PY
       _name="${_k%%|*}"
       _idx="${_k##*|}"
       if [[ "${_idx}" == "${L}" ]]; then
-        # match same system prefix (smd:<system>:...)
-        if [[ "${_name}" == "smd:${SYS}:"* || "${_name}" == "smd:${SYS}" ]]; then
-          _found=1
-          break
+          # Extract queued system fragment from the queued job name (may be truncated)
+          queued_sys="${_name#smd:}"
+          queued_sys="${queued_sys%%:*}"
+          target_sys="${SYS}"
+          # If queued_sys is empty, skip
+          if [[ -n "${queued_sys}" ]]; then
+            # Require a minimal fragment length to avoid accidental short matches
+            if (( ${#queued_sys} >= 4 )); then
+              # Consider it a match if either side is a prefix of the other (handles truncation)
+              if [[ "${target_sys}" == "${queued_sys}"* || "${queued_sys}" == "${target_sys}"* ]]; then
+                _found=1
+                break
+              fi
+            fi
+          fi
         fi
-      fi
     done
     if [[ "${_found}" -eq 1 ]]; then
       echo "[smd-submit-new] SKIP queued (index present for same system): ${RUN} (idx ${L})" >&2
