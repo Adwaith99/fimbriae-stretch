@@ -1,332 +1,624 @@
-# fimbriae-stretch: Automated GROMACS Pipeline for Fimbrial Protein Simulations
+# Fimbriae Steered Molecular Dynamics (SMD) Pipeline
 
-This repository contains an automated, modular pipeline for running **protein stretching (pulling) molecular dynamics simulations** in **GROMACS**.  
-It supports complete system preparation, staged equilibration, and initial quality-control analysis.  
-All steps are configured by a single `config.yaml` file and executed using a `Makefile` interface.
+Automated workflow for building, equilibrating, and running steered molecular dynamics (SMD) simulations on fimbrial systems.
 
----
+## Prerequisites
 
-## Project Overview
+### Software
+- **GROMACS** 2024.4 or newer (CPU and/or GPU builds)
+- **Python 3.x** with:
+  - PyYAML
+  - NumPy (for `make analyze-eq`)
+  - Matplotlib (for `make analyze-eq`)
+- **VMD** (for movie generation; must be in PATH)
+- **GNU Parallel** (optional, for batch trajectory preprocessing)
+- **ffmpeg** (for movie encoding)
+- **Slurm** workload manager
 
-Each system (e.g., `fimA_WT`) has its own subdirectory under `systems/`, containing the PDB and build artifacts.  
-All jobs are run on a Compute Canada–style SLURM cluster with GROMACS 2024.4 and CUDA 12.2.
-
-The pipeline handles:
-
-| Stage | Description | Job type |
-|:------|:-------------|:---------|
-| EM | Energy minimization of the solvated, ionized system | separate SLURM job |
-| NVT / NPT (staged) | Five equilibration pairs with decreasing position restraints and increasing temperature | sequential SLURM jobs |
-| Final NPT | Unrestrained equilibrium MD at 303 K and 1 bar (production-like) | single SLURM job |
-| Analysis | Extracts temperature, pressure, and density traces and generates a grid plot (PDF + PNG) | local |
-
-After equilibration, snapshots from the final NPT run will be used as starting configurations for **steered MD pulling simulations** (next development stage).
+### Cluster Environment
+This pipeline is designed for HPC clusters with Slurm. Adjust partition names, module loads, and resource requests in `config.yaml` to match your site.
 
 ---
 
-## Directory Layout
+## Quick Start
 
-```
-fimbriae-stretch/
-│
-├── config.yaml               # master configuration (temperatures, restraints, SLURM settings)
-├── Makefile                  # main task interface
-│
-├── pipelines/                # main workflow scripts
-│   ├── fimA_build_submit_staged.sh   # submits staged equilibration jobs
-│   ├── equil_stage.sh                # generates MDPs and runs grompp/mdrun
-│   ├── analyze_eq.sh                 # energy extraction + plotting wrapper
-│
-├── scripts/                  # helper utilities
-│   ├── extract_eq.sh         # extract Temperature / Pressure / Density / Potential from .edr
-│   ├── detect_energy_index.py # optional helper for automatic index detection
-│   ├── plot_eq_grid.py       # produces eq_grid.png/pdf
-│
-├── manifests/                # auto-generated run manifests
-│
-└── systems/
-    └── fimA_WT/
-        ├── nfimA_5chains_beta_deleted.pdb
-        └── 00_build/
-            ├── em.edr, nvt_fc*.edr, npt_fc*.edr, npt.edr
-            ├── topol.top, posre_*.itp, ...
-            └── xvg/               # analysis outputs
-```
-
----
-
-## Setup and Usage
-
-### 1. Clone and sync
+### 1. Clone the Repository
 ```bash
-git clone git@github.com:<USER>/fimbriae-stretch.git
+git clone <repo-url>
 cd fimbriae-stretch
 ```
 
-Edit `config.yaml` to define:
-- Global simulation parameters (`dt_ps`, restraint constants, number of replicates)
-- SLURM resource parameters (`partition`, `gpus_per_node`, `cpus_per_task`, `time_limit`)
-- Equilibration length and walltimes under `globals.equilibrium_md`
+### 2. Configure Your Systems
+Edit `config.yaml`:
+- **Systems block**: define your PDB path, box size, anchor/pulled residue ranges, speeds, replicates, and performance estimates.
+- **GPU vs CPU**: 
+  - For **GPU jobs** (recommended for equilibration and fast SMD):
+    - Set a GPU-capable partition in `globals.slurm.partition`
+    - Uncomment `gpus_per_node` (e.g., `h100:1`)
+    - Use the **CUDA-enabled** `gromacs_module` line (comment out the non-CUDA one)
+  - For **CPU jobs**:
+    - Use a CPU partition
+    - Keep `gpus_per_node` commented
+    - Use the **non-CUDA** `gromacs_module` line (comment out the CUDA one)
 
-Commit and push to synchronize between your laptop and the cluster.
+**Template guidance**: The `systems` block is a template; adjust system names, PDB paths, box dimensions, and variant definitions per your needs.
 
 ---
 
-### 2. Build and equilibrate systems
+## Typical Workflow
 
-#### a) Prepare input files
-Copy each PDB into `systems/<SYS>/` and set its path in `config.yaml`.
+### 3. Generate Manifests
+```bash
+make manifest
+```
 
-#### b) Submit equilibration
-On the **cluster login node**:
+**What it does**: Scans your `config.yaml` systems block and generates `manifests/systems.csv`, a CSV listing all system/variant combinations that need to be built.
+
+**Why**: This manifest drives the build stage, ensuring each system is prepared consistently before SMD runs.
+
+**Output**: `manifests/systems.csv`
+
+---
+
+### 4. Submit Build Jobs (Equilibration)
+**Important**: Equilibration runs best on GPU. Ensure GPU settings are active in `config.yaml` before submitting.
+
 ```bash
 make build
 ```
 
-- Each stage (EM, NVT/NPT pairs, final NPT) is submitted automatically.  
-- If a job completes successfully, it will be skipped in subsequent runs.  
-- If interrupted, rerun `make build` — the pipeline resumes from the last finished step.
+**What it does**: For each system in the manifest, submits a staged Slurm job chain that:
+1. **System preparation** (on login node): Adds solvent and ions to your PDB, creating a solvated box.
+2. **Energy minimization (EM)**: Removes steric clashes and bad contacts.
+3. **NVT equilibration**: Heats the system to target temperature (303 K) with position restraints.
+4. **NPT equilibration (short)**: Adds pressure coupling to equilibrate box density.
+5. **NPT final**: Runs a longer production-like equilibration (default 10 ns) with no restraints; this trajectory is used for sampling SMD starting frames.
 
-Logs are written to `logs/`.
+**Why**: Proper equilibration ensures the system reaches a stable state before pulling simulations. Poorly equilibrated systems produce unreliable force profiles.
+
+**Output**: 
+- `systems/<system>/00_build/ions.gro`: solvated structure
+- `systems/<system>/00_build/npt_final.tpr` and `npt_final.xtc`: final equilibrium trajectory
+- `systems/<system>/00_build/topol.top`: system topology
+- `systems/<system>/00_build/index.ndx`: GROMACS index groups
+
+**Check queue status**:
+```bash
+make status
+# or directly:
+squeue -u $USER
+```
 
 ---
 
-### 3. Analyze equilibration quality
-
-Run locally or on the cluster:
+### 5. Analyze Equilibration
+Once equilibration jobs complete, plot energy/RMSD/temperature to verify stability:
 ```bash
 make analyze-eq SYS=fimA_WT
 ```
 
-This runs:
-1. `scripts/extract_eq.sh` → extracts `T`, `P`, `ρ`, and `Potential` from each `.edr`.
-   - Staged NVT/NPT use fixed menu indices:  
-     - Temperature = 16  
-     - Pressure = 17  
-     - Density = 23  
-   - Final NPT (`npt.edr` or `npt_final.edr`) uses:  
-     - Pressure = 16  
-     - Density = 22  
-   - EM potential uses index = 11
-2. `scripts/plot_eq_grid.py` → generates `eq_grid.png` and `eq_grid.pdf` in `00_build/`.
+**What it does**: Extracts thermodynamic properties (temperature, pressure, density, potential energy) from the equilibration `.edr` files and generates diagnostic plots showing their evolution over time.
 
-Each row corresponds to one temperature/restraint stage, with Temperature, Pressure, and Density plotted side-by-side.  
-The EM potential appears as a single top-panel trace.
+**Why**: Visual inspection confirms the system has reached equilibrium. Look for:
+- Stable temperature around 303 K
+- Converged potential energy (no drift)
+- RMSD plateau (structural stability)
+
+**Output**: `systems/<SYS>/00_build/eq_analysis.png`
+
+Inspect the plots to ensure systems are equilibrated before proceeding to SMD.
 
 ---
 
-## Job Management Notes
-
-- **Re-runs:** Each stage checks for its output `.gro`; if found, it is skipped.  
-- **Final NPT:** Currently runs as one job; walltime and length are defined in `config.yaml`.  
-- **Checkpointing:** GROMACS writes periodic `.cpt` files; you can resume manually by re-submitting the same stage.
-
----
-
-## Default Output Frequencies
-
-(Coarse for lightweight equilibration)
-
-| Quantity | MDP key | Default interval |
-|-----------|----------|------------------|
-| Energies | `nstenergy` | 50 000 steps (100 ps) |
-| Trajectory (XTC) | `nstxout-compressed` | 10 000 steps (20 ps) |
-| Logs | `nstlog` | 50 000 steps (100 ps) |
-
-These can be tightened in `equil_stage.sh` if smoother plots or higher-resolution trajectories are desired.
-
----
-
-## Next Development Stage: Pulling MD (SMD)
-
-The next step is implementing **steered MD pulling** from equilibrated configurations.  
-Upcoming features:
-- Automatic selection of starting frames from the final NPT trajectory  
-- Generation of pulling `.mdp` files with specified spring constants and velocities  
-- Batch submission of replicate SMD runs via SLURM arrays  
-- Integrated pulling-force and extension analysis
-
----
-
-## Troubleshooting and Tips
-
-- To rerun a single system’s equilibration from scratch, remove its `00_build/BUILD_DONE` and stage `.gro` files, then run `make build`.  
-- To reset all manifests:
-  ```bash
-  make clean
-  ```
-- If `make analyze-eq` only produces one curve, check `.edr` file sizes — empty `.edr` means that stage didn’t finish properly.
-
----
-
-## Dependencies
-
-- **GROMACS 2024.4** (CUDA build recommended)  
-- **Python ≥ 3.8** with:  
-  - `PyYAML`  
-  - `matplotlib`  
-  - `numpy`  
-- SLURM job scheduler
-
----
-
-## Citation
-
-If you use or adapt this pipeline for publications, please cite GROMACS and note this workflow as  
-“Automated staged equilibration and pulling simulation pipeline (fimbriae-stretch)”.
-
-
-
-# Fimbriae-Stretch SMD Pipeline
-
-Automated, reproducible workflow for pulling simulations of fimbrial proteins using **GROMACS 2024.4** on the **Trig HPC** cluster.
-
----
-
-## ⚙️ Overview
-
-The repository automates both **equilibration (setup)** and **SMD pulling** stages.  
-Each pulling system is defined in `config.yaml` and expanded into manifest entries that are submitted as Slurm array jobs.
-
-### Workflow Structure
-
-fimbriae-stretch/
-├── config.yaml                     # All global + per-system settings
-├── manifests/
-│   ├── smd_manifest.csv            # auto-generated from config
-│   └── smd_submitted.csv           # ledger of already-submitted runs
-├── scripts/
-│   ├── smd_runner.sh               # core logic: prepare + grompp + mdrun
-│   ├── smd_job.sh                  # Slurm array entrypoint (runs 1 manifest line)
-│   ├── smd_submit_new.sh           # submits only NEW runs, grouped per speed
-│   ├── build_indices_and_posres.py # auto-creates [Anchor]/[Pulled] + posre
-│   └── gmx_bench.sh                # optional benchmark helper
-├── systems/                        # system-specific build dirs + topology
-│   └── fimA_WT/00_build/
-└── Makefile
-
----
-
-## 🧩 Config Layout
-
-### `globals`
-Controls common parameters.
-
-```yaml
-globals:
-  dt_ps: 0.002
-  k_kj_mol_nm2: 100
-  target_extension_nm: 5.0
-  pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20]
-
-  slurm:
-    partition: compute_full_node
-    gpus_per_node: h100:4
-    cpus_per_task: 96
-    time_limit: "1-00:00:00"
-    array_cap: 5
-    gromacs_module: "StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
-
-  smd:
-    axis: x
-    anchor_chain_template: "systems/{system}/00_build/topol_chain_{chain}.itp"
-    mdrun:
-      ntmpi: 8
-      ntomp: 13
-      nb: gpu
-      bonded: gpu
-      pme: gpu
-      update: gpu
-      npme: 1
-      ntomp_pme: 5
-      # maxh auto-derived from Slurm --time
-```
-
-### `systems`
-Each system defines build parameters and pulling variants.
-
-```yaml
-systems:
-  - name: fimA_WT
-    pdb: "systems/fimA_WT/nfimA_5chains_beta_deleted.pdb"
-    box: [70, 15, 15]
-    anchor_molecule_itp: "systems/fimA_WT/00_build/topol_chain_D.itp"
-    perf_ns_per_day: 50
-
-    variants:
-      - id: AtoD
-        anchor: { chain: "D", res: "135-150" }
-        pulled: { chain: "A", res: "285-300" }
-        speeds: [0.02, 0.05, 0.10, 0.20, 0.5]
-        n_reps: 2
-```
-
----
-
-## 🚀 Usage
-
-### 1. Prepare / regenerate the SMD manifest
+### 6. Build SMD Manifest
+Sample starting frames from the final NPT trajectory and generate the SMD manifest:
 ```bash
 make smd-manifest
 ```
-Generates `manifests/smd_manifest.csv` with one row per (system × variant × speed × replicate).
 
-### 2. Test a single manifest line (no submission)
+**What it does**: 
+1. **Samples starting frames** from the equilibrated `npt_final.xtc` trajectory, discarding an initial warmup period (default: 2 ns) and picking frames at regular intervals (default: every 100 ps).
+2. **Generates `manifests/smd_manifest.csv`** with one row per SMD run, combining:
+   - Each system/variant
+   - Each pull speed
+   - Each replicate (multiple independent pulls)
+   - Each sampled start frame (diversifies initial conditions)
+
+**Why**: Using multiple starting frames from equilibrium improves statistical sampling of force-extension behavior. Each replicate starts from a different equilibrated snapshot.
+
+**Output**: 
+- `manifests/smd_manifest.csv`: complete SMD job list
+- `manifests/starts/<system>_<variant>__*.csv`: metadata for sampled frames
+
+---
+
+### 7. Performance Testing (Optional but Recommended)
+Run short test jobs (~6 min with `-maxh 0.1`) to gauge performance for different box sizes and tune `perf_ns_per_day` in `config.yaml`.
+
+**GPU test** (lines 2 and 5 from manifest):
 ```bash
-make smd-dry-run-one
+make smd-test-gpu LINES=2,5 CLEAN=1
 ```
 
-### 3. Submit new jobs to Slurm
+**CPU test** (line 12):
+```bash
+make smd-test-cpu LINES=12 CLEAN=1
+```
+
+**What it does**: Submits short Slurm test jobs that run `mdrun` for ~6 minutes on specific manifest rows. Prints performance metrics (ns/day) to the log.
+
+**Why**: Real-world throughput varies by box size, GPU/CPU hardware, and system composition. Accurate `perf_ns_per_day` estimates prevent walltime underruns (job killed before completion) or overruns (wasted queue time).
+
+`CLEAN=1` removes the test run directory after completion to avoid leftover data.
+
+**Check logs**:
+```bash
+tail -f logs/smdt_<jobid>.out
+# Extract performance:
+grep -E "Performance|ns/day" logs/smdt_*.out
+```
+
+---
+
+### 8. Adjust Performance Estimates
+Based on test results, update `perf_ns_per_day` for each system in `config.yaml`. This ensures accurate walltime requests.
+
+**What it does**: You manually edit `config.yaml` to set realistic throughput values per system based on observed performance from step 7.
+
+**Why**: The submission script calculates Slurm walltime as: `(target_extension_nm / speed_nm_per_ns) / perf_ns_per_day × 24 hours × safety_factor`. Accurate estimates ensure jobs complete successfully without requesting excessive time.
+
+**Example**: If test logs show 85 ns/day for `fimA_WT`, set `perf_ns_per_day: 85` under that system.
+
+---
+
+### 9. Dry-Run SMD Submission
+Preview which jobs will be submitted without actually queuing them:
+
+**GPU dry-run**:
+```bash
+SMD_DEBUG=1 SLURM_TEST_ONLY=1 make smd-submit-new
+```
+
+**CPU dry-run**:
+```bash
+SMD_DEBUG=1 SLURM_TEST_ONLY=1 make smd-submit-new-cpu
+```
+
+**What it does**: Parses `manifests/smd_manifest.csv`, groups runs by system and speed, computes walltimes and resource requests, and prints what would be submitted—but does not actually call `sbatch`.
+
+**Why**: Lets you verify job parameters (walltime, partition, GPU/CPU allocation) before flooding the queue. Catch configuration errors early.
+
+Review the printed job details (system, speed, replicate counts, walltime, resources).
+
+---
+
+### 10. Submit SMD Arrays
+Once satisfied with the dry-run output:
+
+**GPU mode** (default):
 ```bash
 make smd-submit-new
 ```
 
-### 4. Monitor jobs
+**CPU mode**:
 ```bash
-squeue -u $USER -n smd
-tail -f logs/*_v*.out
+make smd-submit-new-cpu
 ```
 
-### 5. Benchmarking (optional)
+**What it does**: Submits Slurm array jobs for all NEW (not yet completed) SMD runs. Each array task invokes `scripts/smd_runner.sh`, which:
+1. Extracts a starting frame from `npt_final.xtc`
+2. Builds run-local topology with anchor position restraints
+3. Generates `pull.mdp` with the configured pull rate and spring constant
+4. Runs `grompp` to create `pull.tpr`
+5. Executes `mdrun` to perform the steered MD pull
+6. Writes pull distance/force traces (`pull_pullx.xvg`, `pull_pullf.xvg`)
+
+The submission script:
+- Groups runs by system and speed
+- Caps concurrent array tasks per `globals.slurm.array_cap`
+- Skips already-completed runs (checks for `pull.xtc` and expected `nsteps`)
+- Automatically computes walltimes from `perf_ns_per_day` and target extension
+
+**Why**: SMD simulations generate force-extension curves by gradually stretching the system at constant velocity. Each run produces one pulling trajectory; aggregating many replicates across speeds reveals mechanical unfolding pathways and rupture forces.
+
+**Output** (per run): `smd/<system>/<variant>/v<speed>/rep<rep>/<start_id>/`
+- `pull.xtc`: SMD trajectory (all atoms, 10 ps stride)
+- `pull_pullx.xvg`: pull distance vs. time
+- `pull_pullf.xvg`: pull force vs. time
+- `run.json`: metadata (speed, rate, nsteps, etc.)
+
+**Monitor progress**:
 ```bash
-scripts/gmx_bench.sh -s smd/fimA_WT/AtoD/v0.020/rep1/s295/pull.tpr -c 96 -g 4 -n 20000 --ntmpi "4 8" --ntomp_pme "3 5"
+make status
+# Tail a specific array task log:
+tail -f logs/pulls_<array_id>_<task_id>.out
 ```
 
 ---
 
-## 🧠 Internals
+### 11. Post-Processing: Trajectories and Movies
 
-| Script | Description |
-|--------|--------------|
-| `smd_runner.sh` | Creates start.gro, builds index/posre, computes signed distance, writes MDP + topology, runs GROMACS. |
-| `smd_job.sh` | Slurm job entry per manifest row. |
-| `smd_submit_new.sh` | Submits new jobs per (system,speed) only. |
-| `build_indices_and_posres.py` | Builds `[Anchor]/[Pulled]` and posres itp automatically. |
+#### Preprocess Trajectories
+Extract protein-only, PBC-fixed, centered trajectories with time-based striding:
+
+**All systems**:
+```bash
+make preproc-traj J=8
+```
+
+**Specific system/variant**:
+```bash
+make preproc-traj-system SYS=fimA_WT VAR=AtoD J=8
+```
+
+**What it does**: For each completed SMD run, uses `gmx trjconv` to:
+1. Extract only protein atoms (removes water, ions)
+2. Fix periodic boundary conditions (`-pbc nojump`) to avoid molecules jumping across box edges
+3. Center the protein in the box
+4. Apply time-based striding to reduce file size (e.g., one frame every 1000 ps for a 0.02 nm/ns pull)
+
+`J=<jobs>` controls parallel GNU Parallel job count (default: 4).
+
+**Why**: Raw SMD trajectories include all atoms and may have PBC artifacts. Preprocessing creates clean, compact protein-only trajectories suitable for visualization and further analysis (RMSD, distance measurements, etc.).
+
+**Output**: `analysis/preproc_traj/<system>/<variant>/v<speed>/rep<rep>/<start_id>/`
+- `traj_protein_dt<dt>.xtc`: strided protein trajectory
+- `start_protein.gro`: initial frame
+
+**Skip behavior**: Already processed runs are skipped (non-destructive).
 
 ---
 
-## 🧩 Outputs
+#### Generate Movies
+Render MP4 movies from preprocessed trajectories using VMD:
 
-Each SMD replicate lives in:
-```
-smd/<system>/<variant>/v0.050/rep2/s123/
+**All movies**:
+```bash
+make movies
 ```
 
-and contains:
+**Specific system/variant**:
+```bash
+make movies-system SYS=fimA_WT VAR=AtoD
 ```
-start.gro
-pull.mdp
-topol.top
-posre_anchor_*.itp
-pull.tpr
-pull.log
-pull.xvg / pullf.xvg / pullx.xvg
-run.json
+
+**What it does**: For each preprocessed trajectory:
+1. Loads `start_protein.gro` and `traj_protein_dt*.xtc` into VMD
+2. Auto-detects protein chains by residue number resets (or uses a manual chain ranges file)
+3. Renders each chain in a different color using NewCartoon representation
+4. Saves frames as PPM images (via VMD's `render snapshot`)
+5. Encodes frames into MP4 video using ffmpeg (H.264, YUV420p)
+
+**Why**: Movies provide intuitive visual confirmation of pulling dynamics: watch the system stretch, domains unfold, and chains separate. Useful for presentations and spotting anomalies.
+
+**Customize rendering**:
+```bash
+STRIDE=2 FPS=24 WIDTH=1280 HEIGHT=720 make movies
+```
+- `STRIDE`: skip frames in the already-strided trajectory (default: 1 = render every frame)
+- `FPS`: playback speed
+- `WIDTH` / `HEIGHT`: resolution
+
+**Output**: `analysis/movies_out/<system>__<variant>__v<speed>__rep<rep>__<start_id>__traj_protein_dt<dt>.mp4`
+
+**Skip behavior**: Existing non-empty MP4s are skipped.
+
+**Note**: VMD must be in PATH. If not found, the script will prompt you to load the appropriate module.
+
+---
+
+## Folder Structure
+
+```
+fimbriae-stretch/
+├── config.yaml                     # Main configuration (systems, Slurm, mdrun settings)
+├── Makefile                        # Convenience targets for the workflow
+├── README.md                       # This file
+│
+├── systems/                        # Per-system data
+│   └── <system_name>/
+│       ├── <input>.pdb             # Source structure
+│       └── 00_build/               # Build/equilibration outputs
+│           ├── topol.top           # Processed topology
+│           ├── ions.gro            # Solvated, ionized structure
+│           ├── npt_final.tpr       # Final NPT run file
+│           ├── npt_final.xtc       # Final NPT trajectory (for start sampling)
+│           ├── eq_analysis.png     # Equilibration plots (from make analyze-eq)
+│           └── index.ndx           # GROMACS index with [Anchor] and [Pulled] groups
+│
+├── smd/                            # SMD run outputs
+│   └── <system>/<variant>/v<speed>/rep<rep>/<start_id>/
+│       ├── start.gro               # Starting structure (extracted from NPT)
+│       ├── topol.top               # Run-local topology with posre includes
+│       ├── pull.mdp                # SMD MDP (generated)
+│       ├── pull.tpr                # SMD run file
+│       ├── pull.xtc                # SMD trajectory (compressed, all atoms, 10 ps stride)
+│       ├── pull_pullx.xvg          # Pull distance trace
+│       ├── pull_pullf.xvg          # Pull force trace
+│       ├── run.json                # Run metadata (speed, rate, nsteps, etc.)
+│       └── expected_nsteps.txt     # Expected step count (for completion checks)
+│
+├── analysis/                       # Post-processing outputs
+│   ├── preproc_traj/               # Preprocessed protein trajectories
+│   │   └── <system>/<variant>/v<speed>/rep<rep>/<start_id>/
+│   │       ├── traj_protein_dt<dt>.xtc
+│   │       └── start_protein.gro
+│   └── movies_out/                 # Rendered movies
+│       └── <system>__<variant>__v<speed>__rep<rep>__<start_id>__traj_protein_dt<dt>.mp4
+│
+├── manifests/                      # Job manifests
+│   ├── systems.csv                 # Build manifest (from make manifest)
+│   ├── smd_manifest.csv            # SMD manifest (from make smd-manifest)
+│   └── starts/                     # Sampled start frames metadata
+│       └── <system>_<variant>__*.csv
+│
+├── logs/                           # Slurm output logs
+│   ├── build_<system>.out          # Build job logs
+│   ├── pulls_<array_id>_<task_id>.out  # SMD array task logs
+│   └── smdt_<jobid>.out            # Test run logs (from make smd-test-*)
+│
+├── scripts/                        # Core automation scripts
+│   ├── smd_runner.sh               # SMD job runner (invoked by array tasks)
+│   ├── smd_submit_new.sh           # SMD submission logic (NEW runs only)
+│   ├── smd_build_manifest.py       # Generate smd_manifest.csv
+│   ├── preproc_traj.sh             # Single-run trajectory preprocessing
+│   ├── batch_preproc_traj.sh       # Batch preprocessing with GNU Parallel
+│   ├── make_movies_vmd.sh          # Movie generation wrapper
+│   ├── vmd_make_movie_ppm_chains.tcl  # VMD rendering script
+│   ├── smd_test_run.sh             # Short performance test wrapper
+│   └── ...
+│
+├── pipelines/                      # Higher-level orchestration
+│   ├── build_preflight.sh          # System prep on login node
+│   ├── equil_stage.sh              # Staged equilibration
+│   ├── posteq_sample_starts.sh     # Sample start frames from NPT
+│   └── analyze_eq.sh               # Equilibration analysis
+│
+└── templates/                      # MDP templates for build stages
+    ├── em.mdp
+    ├── nvt.mdp
+    ├── npt.mdp
+    └── npt_final.mdp
 ```
 
 ---
 
-## 🧩 License & Contact
+## Key Configuration Options
 
-Maintained by **Adwaith B Uday**  
-Zeytuni Lab, Department of Biochemistry, McGill University
+### `config.yaml` Structure
+
+#### `globals`
+- `dt_ps`: MD time step (ps)
+- `k_kj_mol_nm2`: SMD spring constant (kJ/mol/nm²)
+- `target_extension_nm`: Default extension target (can be overridden per system/variant)
+- `n_reps_default`: Default replicate count
+- `pull_speeds_nm_per_ns`: Global list of candidate pull speeds (nm/ns)
+
+#### `globals.slurm`
+- `partition`: Slurm partition/queue
+- `gpus_per_node`: GPU request (e.g., `h100:1`); **comment out for CPU jobs**
+- `cpus_per_task`: CPU threads per task
+- `nodes`, `ntasks_per_node`: MPI task distribution (relevant for CPU mode)
+- `time_limit`: Max walltime for jobs
+- `array_cap`: Concurrent array task limit
+- `gromacs_module`: Module load string; **toggle between CUDA and non-CUDA builds**
+- `vmd_module` (optional): VMD module hint for movie generation
+
+#### `globals.smd.mdrun`
+**GPU-only section**: used for GPU runs; ignored for CPU jobs.
+- `ntmpi`, `ntomp`: Thread counts
+- `nb`, `bonded`, `pme`, `update`: Device offload (`gpu` for GPU runs)
+- `npme`, `ntomp_pme`: PME-specific tuning
+
+#### `systems[]`
+Template block; adjust per your systems:
+- `name`: System identifier
+- `pdb`: Path to source PDB
+- `box`: Build box dimensions [x, y, z] in nm
+- `perf_ns_per_day`: Estimated SMD throughput (tune after performance tests)
+- `SOL_index`: Solvent group index in `index.ndx` (for preprocessing)
+
+#### `systems[].variants[]`
+- `id`: Variant identifier
+- `anchor`: `{chain, res}` defining anchored residues
+- `pulled`: `{chain, res}` defining pulled residues
+- `speeds`: Variant-specific pull speeds (nm/ns)
+- `n_reps`: Variant-specific replicate count
+- `target_extension_nm`: Variant-specific extension target
+- `flip_pull_sign` (optional): Set `true` to negate pull direction
+
+---
+
+## Common Tasks
+
+### Check Job Status
+```bash
+make status
+# or:
+squeue -u $USER
+```
+
+### Tail Logs
+```bash
+# Build log for a system:
+make tail-build SYS=fimA_WT
+
+# SMD array task log:
+make tail-pull A=<array_id> a=<task_id>
+
+# Test run log (latest):
+tail -f $(ls -t logs/smdt_*.out | head -n 1)
+```
+
+### Cancel Jobs
+```bash
+make cancel A=<job_or_array_id>
+# or:
+scancel <job_id>
+```
+
+### Clean Ledger
+Remove completed runs from the submission ledger:
+```bash
+make smd-clean-ledger
+```
+
+### Reset System
+Wipe manifests and outputs for a single system:
+```bash
+make reset SYS=fimA_WT
+```
+
+### Reset All
+Wipe all manifests and outputs:
+```bash
+make reset-all
+```
+
+---
+
+## Troubleshooting
+
+### Equilibration Issues
+- **System not equilibrated**: Check plots from `make analyze-eq`. If energy/RMSD are unstable, extend `equilibrium_md.length_ns` in `config.yaml` or adjust restraint forces.
+- **Build failures**: Check `logs/build_<system>.out` for grompp/mdrun errors.
+
+### SMD Submission Issues
+- **No jobs submitted**: Ensure `manifests/smd_manifest.csv` exists and has rows with `status=NEW`. Run `make smd-manifest` if needed.
+- **Walltime too short**: Tune `perf_ns_per_day` in `config.yaml` based on test runs.
+- **GPU/CPU mismatch**: Verify `gromacs_module` and `gpus_per_node` settings match your intended run mode.
+
+### Preprocessing Issues
+- **GROMACS module not loaded**: Ensure `globals.slurm.gromacs_module` is set correctly. The preprocessing script auto-loads it if available.
+- **trjconv group errors**: Adjust `PROT_GROUP` env var if your index numbering differs (default: `1` for Protein).
+
+### Movie Generation Issues
+- **VMD not found**: Add VMD to PATH or load the appropriate module before running `make movies`. Optionally set `globals.slurm.vmd_module` in `config.yaml` for a helpful prompt.
+- **ffmpeg errors**: Ensure ffmpeg is installed and in PATH.
+- **Headless rendering**: On compute nodes without X11, the script uses `xvfb-run` automatically if available.
+
+---
+
+## Performance Tuning
+
+### Estimating `perf_ns_per_day`
+1. Run short tests: `make smd-test-gpu LINES=2,5 CLEAN=1`
+2. Extract performance from logs: `grep "Performance" logs/smdt_*.out`
+3. Update `perf_ns_per_day` for each system in `config.yaml` to match observed throughput.
+4. Re-run dry-run to verify walltime estimates: `SMD_DEBUG=1 SLURM_TEST_ONLY=1 make smd-submit-new`
+
+### GPU vs CPU Trade-offs
+- **GPU**: 10-50× faster for typical box sizes; recommended for equilibration and SMD.
+- **CPU**: Useful when GPU partitions are congested or for very large systems where CPU scaling compensates.
+- **Hybrid**: Run equilibration on GPU, then switch to CPU for SMD if needed (update `config.yaml` accordingly).
+
+---
+
+## Advanced Options
+
+### Environment Variable Overrides
+
+**Preprocessing**:
+- `PREPROC_JOBS=8`: Control parallel job count
+- `DX_NM=0.02`: Target extension per frame (nm)
+- `PROT_GROUP=1`: Protein group index for `gmx trjconv`
+- `GMX=gmx_mpi`: Override GROMACS command
+
+**Movie generation**:
+- `STRIDE=2`: Frame sampling step (default: 1 = every frame)
+- `FPS=30`: Movie playback speed (frames per second)
+- `WIDTH=1600 HEIGHT=900`: Render resolution
+- `RANGES_FILE=/path/to/chain_ranges.txt`: Manual chain range specification
+
+**SMD runner**:
+- `DRY_RUN=1`: Skip mdrun (grompp only; useful for testing)
+- `MAXH_HOURS=<float>`: Override `-maxh` for mdrun
+
+---
+
+## Make Targets Reference
+
+### Build & Equilibration
+- `make manifest`: Generate build manifest
+- `make prep SYS=<name>`: Prepare system on login node (up to ions.gro)
+- `make build`: Submit staged build chains (GPU recommended)
+- `make analyze-eq SYS=<name>`: Plot equilibration metrics
+
+### SMD
+- `make smd-manifest`: Generate SMD manifest with sampled starts
+- `make smd-dry-run-one`: Test first manifest row locally (grompp only)
+- `make smd-test-gpu LINES=<N[,N2,...]> [CLEAN=1]`: Short GPU performance test
+- `make smd-test-cpu LINES=<N[,N2,...]> [CLEAN=1]`: Short CPU performance test
+- `make smd-submit-new`: Submit NEW SMD runs (GPU mode)
+- `make smd-submit-new-cpu`: Submit NEW SMD runs (CPU mode)
+- `make smd-clean-ledger`: Remove completed runs from ledger
+
+### Post-Processing
+- `make preproc-traj [J=<jobs>]`: Preprocess all trajectories in parallel
+- `make preproc-traj-system SYS=<name> [VAR=<var>] [J=<jobs>]`: Preprocess specific system/variant
+- `make movies`: Generate all movies
+- `make movies-system SYS=<name> [VAR=<var>]`: Generate movies for specific system/variant
+
+### Utilities
+- `make status`: Show your Slurm queue
+- `make tail-build SYS=<name>`: Tail build log
+- `make tail-pull A=<array_id> a=<task_id>`: Tail SMD array task log
+- `make cancel A=<job_id>`: Cancel Slurm job
+- `make reset SYS=<name>`: Reset one system
+- `make reset-all`: Reset all systems
+
+---
+
+## Example End-to-End Session
+
+```bash
+# 1. Clone and configure
+git clone <repo-url>
+cd fimbriae-stretch
+# Edit config.yaml: set systems, GPU partition, CUDA module
+
+# 2. Build and equilibrate
+make manifest
+make build
+make status  # wait for completion
+
+# 3. Verify equilibration
+make analyze-eq SYS=fimA_WT
+make analyze-eq SYS=mfa1_WT
+
+# 4. Generate SMD manifest
+make smd-manifest
+
+# 5. Performance test (GPU)
+make smd-test-gpu LINES=2,5 CLEAN=1
+tail -f $(ls -t logs/smdt_*.out | head -n 1)
+grep "Performance" logs/smdt_*.out
+# Update perf_ns_per_day in config.yaml
+
+# 6. Dry-run SMD submission
+SMD_DEBUG=1 SLURM_TEST_ONLY=1 make smd-submit-new
+
+# 7. Submit SMD arrays
+make smd-submit-new
+make status
+
+# 8. Wait for completion, then preprocess
+make preproc-traj J=8
+
+# 9. Generate movies
+make movies
+
+# 10. Enjoy your fimbrial dynamics!
+```
+
+---
+
+## Contributing
+
+Improvements, bug reports, and feature requests are welcome. Open an issue or submit a pull request.
+
+---
+
+## Contact
+
+For questions or issues, contact the repository maintainer.
