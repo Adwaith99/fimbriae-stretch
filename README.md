@@ -307,6 +307,37 @@ STRIDE=2 FPS=24 WIDTH=1280 HEIGHT=720 make movies
 
 ---
 
+## Adding More Systems/Runs
+
+The pipeline is designed to be **incremental and non-destructive**. You can expand your study at any time by modifying `config.yaml` and re-running the appropriate steps.
+
+### Adding New Systems
+1. Add a new system entry to the `systems[]` block in `config.yaml`
+2. Run `make manifest` — new system appears in the build manifest
+3. Run `make build` — only the new system is built; existing systems are unchanged
+
+### Adding New Variants
+1. Add a new variant to an existing system's `variants[]` list in `config.yaml`
+2. Run `make smd-manifest` — new variant rows are appended to `manifests/smd_manifest.csv`
+3. Run `make smd-submit-new` — only NEW runs are submitted; completed runs are skipped
+
+### Adding More Speeds
+1. Add speeds to a variant's `speeds[]` list in `config.yaml`
+2. Run `make smd-manifest` — new speed combinations are added to the manifest
+3. Run `make smd-submit-new` — submits only the new speed runs
+
+### Adding More Replicates
+1. Increase `n_reps` for a variant in `config.yaml`
+2. Run `make smd-manifest` — new replicate rows are inserted (preserves existing replicate assignments)
+3. Run `make smd-submit-new` — submits the additional replicates
+
+**Key behavior**: 
+- `make smd-manifest` preserves existing row assignments and appends/inserts new rows without changing completed runs.
+- `make smd-submit-new` checks each run directory for completion (`pull.xtc` + expected steps) and skips already-finished runs.
+- You can safely re-run these commands after config changes; they only affect new or incomplete work.
+
+---
+
 ## Folder Structure
 
 ```
