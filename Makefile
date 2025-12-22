@@ -139,4 +139,13 @@ smd-submit-new-cpu:  ## Submit only NEW SMD rows (CPU mode)
 smd-clean-ledger:  ## Remove completed runs from smd_submitted.csv ledger
 	@bash scripts/smd_clean_ledger.sh
 
+.PHONY: preproc-traj
+preproc-traj:  ## Preprocess all SMD trajectories (protein-only, centered, PBC-fixed, parallel)
+	@bash scripts/batch_preproc_traj.sh
+
+.PHONY: preproc-traj-system
+preproc-traj-system:  ## Preprocess trajectories for a system: make preproc-traj-system SYS=fimA_WT [VAR=AtoD]
+	@if [ -z "$(SYS)" ]; then echo "Usage: make preproc-traj-system SYS=<SYSTEM> [VAR=<VARIANT>]"; exit 2; fi
+	@bash scripts/batch_preproc_traj.sh "$(SYS)" "$(VAR)"
+
 
