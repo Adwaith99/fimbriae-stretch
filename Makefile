@@ -159,4 +159,13 @@ movies-system:  ## Generate movies for a specific system/variant; set SYS=<syste
 	if [ -n "$(VAR)" ]; then ROOT=$$ROOT/$(VAR); fi; \
 	bash scripts/make_movies_vmd.sh $$ROOT analysis/movies_out
 
+.PHONY: smd-test-gpu smd-test-cpu
+smd-test-gpu:  ## Submit short GPU test run(s): make smd-test-gpu LINES=2[,5,...] [CLEAN=1]
+	@if [ -z "$(LINES)" ]; then echo "Usage: make smd-test-gpu LINES=<line[,line2,...]> [CLEAN=1]"; exit 2; fi
+	@bash scripts/smd_test_run.sh gpu --lines "$(LINES)" $(if $(CLEAN),--clean,)
+
+smd-test-cpu:  ## Submit short CPU test run(s): make smd-test-cpu LINES=2[,5,...] [CLEAN=1]
+	@if [ -z "$(LINES)" ]; then echo "Usage: make smd-test-cpu LINES=<line[,line2,...]> [CLEAN=1]"; exit 2; fi
+	@bash scripts/smd_test_run.sh cpu --lines "$(LINES)" $(if $(CLEAN),--clean,)
+
 
