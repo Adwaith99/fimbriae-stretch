@@ -95,14 +95,33 @@ echo "[preproc-traj] INFO: Processing ${SDIR_REL} (dt=${DT_PS_THIS} ps)" >&2
 echo "[preproc-traj] INFO:   -> ${xtc_out}" >&2
 echo "[preproc-traj] INFO:   -> ${gro_out}" >&2
 
+# Optionally load GROMACS module from config if available
+GMX_MODULE=$(python3 - <<PY
+import yaml
+cfg=yaml.safe_load(open(r"${ROOT}/config.yaml"))
+m=cfg.get('globals',{}).get('slurm',{}).get('gromacs_module','')
+print(m)
+PY
+)
+if [[ -n "${GMX_MODULE}" ]] && type module >/dev/null 2>&1; then
+  module purge >/dev/null 2>&1 || true
+  module load ${GMX_MODULE} >/dev/null 2>&1 || true
+  echo "[preproc-traj] INFO: loaded module: ${GMX_MODULE}" >&2
+fi
+
 # Be nice: single-thread for OpenMP
 export OMP_NUM_THREADS=1
 
+# Use index.ndx if present (to ensure group names exist)
+NDX="${SDIR}/index.ndx"; NDX_FLAG=()
+[[ -f "${NDX}" ]] && NDX_FLAG=( -n "${NDX}" )
+
 # 1) Protein-only, PBC-fixed, centered, strided trajectory
-echo "${PROT_GROUP}" | ${GMX} trjconv \
+printf "%s\n%s\n" "${PROT_GROUP}" "${PROT_GROUP}" | ${GMX} trjconv \
     -s "${tpr_in}" \
     -f "${xtc_in}" \
     -o "${xtc_out}" \
+    "${NDX_FLAG[@]}" \
     -pbc nojump \
     -center \
     -dt "${DT_PS_THIS}" \
@@ -112,10 +131,11 @@ echo "${PROT_GROUP}" | ${GMX} trjconv \
 }
 
 # 2) Start structure at t=0 (same PBC/centering)
-echo "${PROT_GROUP}" | ${GMX} trjconv \
+printf "%s\n%s\n" "${PROT_GROUP}" "${PROT_GROUP}" | ${GMX} trjconv \
     -s "${tpr_in}" \
     -f "${xtc_in}" \
     -o "${gro_out}" \
+    "${NDX_FLAG[@]}" \
     -pbc nojump \
     -center \
     -dump 0 \
