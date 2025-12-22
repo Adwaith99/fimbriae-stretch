@@ -148,4 +148,15 @@ preproc-traj-system:  ## Preprocess trajectories for a system: make preproc-traj
 	@if [ -z "$(SYS)" ]; then echo "Usage: make preproc-traj-system SYS=<SYSTEM> [VAR=<VARIANT>] [J=<jobs>]"; exit 2; fi
 	@bash scripts/batch_preproc_traj.sh "$(SYS)" "$(VAR)" "$(J)"
 
+.PHONY: movies
+movies:  ## Generate movies from analysis/preproc_traj into analysis/movies_out
+	@bash scripts/make_movies_vmd.sh analysis/preproc_traj analysis/movies_out
+
+.PHONY: movies-system
+movies-system:  ## Generate movies for a specific system/variant; set SYS=<system> VAR=<variant>
+	@if [ -z "$(SYS)" ]; then echo "Usage: make movies-system SYS=<SYSTEM> [VAR=<VARIANT>]"; exit 2; fi
+	@ROOT=analysis/preproc_traj/$(SYS); \
+	if [ -n "$(VAR)" ]; then ROOT=$$ROOT/$(VAR); fi; \
+	bash scripts/make_movies_vmd.sh $$ROOT analysis/movies_out
+
 
