@@ -72,9 +72,13 @@ if [[ ! -s "${tmpfile}" ]]; then
   exit 0
 fi
 
-# Process in parallel (4 jobs, one per line)
-echo "[batch-preproc] Starting parallel processing (4 jobs)..." >&2
-cat "${tmpfile}" | parallel -j 4 bash scripts/preproc_traj.sh {}
+# Process in parallel (configurable jobs, default 4)
+JOBS="${PREPROC_JOBS:-${3:-4}}"
+if ! [[ "${JOBS}" =~ ^[0-9]+$ ]] || [[ "${JOBS}" -le 0 ]]; then
+  JOBS=4
+fi
+echo "[batch-preproc] Starting parallel processing (${JOBS} jobs)..." >&2
+cat "${tmpfile}" | parallel -j "${JOBS}" bash scripts/preproc_traj.sh {}
 
 echo "[batch-preproc] Done" >&2
 

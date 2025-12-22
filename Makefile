@@ -140,12 +140,12 @@ smd-clean-ledger:  ## Remove completed runs from smd_submitted.csv ledger
 	@bash scripts/smd_clean_ledger.sh
 
 .PHONY: preproc-traj
-preproc-traj:  ## Preprocess all SMD trajectories (protein-only, centered, PBC-fixed, parallel)
-	@bash scripts/batch_preproc_traj.sh
+preproc-traj:  ## Preprocess all SMD trajectories (protein-only, centered, PBC-fixed, parallel). Override jobs with J=8
+	@bash scripts/batch_preproc_traj.sh "" "" "$(J)"
 
 .PHONY: preproc-traj-system
-preproc-traj-system:  ## Preprocess trajectories for a system: make preproc-traj-system SYS=fimA_WT [VAR=AtoD]
-	@if [ -z "$(SYS)" ]; then echo "Usage: make preproc-traj-system SYS=<SYSTEM> [VAR=<VARIANT>]"; exit 2; fi
-	@bash scripts/batch_preproc_traj.sh "$(SYS)" "$(VAR)"
+preproc-traj-system:  ## Preprocess trajectories for a system: make preproc-traj-system SYS=fimA_WT [VAR=AtoD] [J=8]
+	@if [ -z "$(SYS)" ]; then echo "Usage: make preproc-traj-system SYS=<SYSTEM> [VAR=<VARIANT>] [J=<jobs>]"; exit 2; fi
+	@bash scripts/batch_preproc_traj.sh "$(SYS)" "$(VAR)" "$(J)"
 
 
