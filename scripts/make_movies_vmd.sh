@@ -35,6 +35,27 @@ if [[ -z "${XVFB_RUN}" ]]; then
   fi
 fi
 
+# Ensure VMD is available; if not, suggest loading a module
+if ! command -v "$VMD_BIN" >/dev/null 2>&1; then
+  # Try to read optional VMD module hint from config.yaml
+  VMD_MODULE_HINT="$(python3 - <<'PY'
+import yaml
+try:
+    cfg=yaml.safe_load(open('config.yaml'))
+    print(cfg.get('globals',{}).get('slurm',{}).get('vmd_module',''))
+except Exception:
+    print('')
+PY
+)"
+  echo "ERROR: VMD binary '$VMD_BIN' not found in PATH." >&2
+  if [[ -n "$VMD_MODULE_HINT" ]]; then
+    echo "Please load the module and retry: module load $VMD_MODULE_HINT" >&2
+  else
+    echo "Please ensure VMD is installed or load your site's VMD module." >&2
+  fi
+  exit 2
+fi
+
 mkdir -p "$OUTDIR"
 mkdir -p "$OUTDIR/_frames"
 
