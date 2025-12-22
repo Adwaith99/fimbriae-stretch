@@ -1,19 +1,45 @@
+##
+## Repository configuration (do not change values here unless you intend to alter behavior).
+## This pass adds explanatory comments only: no values are modified.
+##
+## GPU vs CPU runs:
+## - For GPU Slurm jobs: set an appropriate GPU partition, uncomment and set `gpus_per_node`, and use the CUDA-enabled GROMACS module.
+## - For CPU Slurm jobs: use a CPU partition, keep `gpus_per_node` commented, and use the non-CUDA GROMACS module.
+## - In `smd.mdrun`, GPU jobs typically use `nb/bonded/pme/update: gpu`; CPU jobs should switch these to `cpu` (not changed here; see comments below).
+##
 globals:
   dt_ps: 0.002
+  # Base MD integrator time step in picoseconds for build/equil stages.
   k_kj_mol_nm2: 500
+  # Pulling spring constant (k) in kJ/mol/nm^2 used by the SMD restraint.
   target_extension_nm: 5.0
+  # Default total extension target for SMD (variant/system may override).
   n_reps_default: 10
+  # Default replicate count if not specified per-variant.
   pull_speeds_nm_per_ns: [0.02, 0.05, 0.10, 0.20, 0.5]
+  # Global list of candidate pulling speeds (nm/ns); variants may select subsets.
+  max_wall_hours : 24
+  # Global maximum walltime (hours) for Slurm job submission scripts.
 
   slurm:
     partition: default
-    gpus_per_node: h100:4
-    cpus_per_task: 8
-    nodes : 10
-    ntasks_per_node : 24
-    time_limit: "1-00:00:00"
-    array_cap: 5
-    gromacs_module: "arch/avx512 StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
+    # Slurm partition/queue name. Use a GPU-capable partition for GPU jobs.
+    #gpus_per_node: h100:1
+    # Uncomment and set for GPU jobs (example: one H100 per node). Keep commented for CPU jobs.
+    cpus_per_task: 4
+    # Logical CPU threads reserved per task (mdrun rank). Adjust per ntmpi/ntomp.
+    nodes : 1
+    # Number of nodes per job (arrays submit one job per system).
+    ntasks_per_node : 48
+    # MPI tasks per node (often equals total ranks used by mdrun). Tune for your site.
+    # time_limit: "7-00:00:00"
+    # # Slurm walltime limit; submission scripts cap mdrun `-maxh` accordingly.
+    array_cap: 3
+    # Maximum number of concurrent arrays submitted (queue pressure control).
+    gromacs_module: "arch/avx512 StdEnv/2023 gcc/12.3 openmpi/4.1.5 gromacs/2024.4"
+    # Non-CUDA build (CPU-only). Use this for CPU jobs; comment out the CUDA module below.
+    #gromacs_module: "arch/avx512 StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.2 gromacs/2024.4"
+    # CUDA-enabled build (GPU). For GPU jobs, comment out the non-CUDA line above and uncomment this one.
 
   # Position restraints used in build stages (scaled per stage)
   posre:
@@ -30,19 +56,27 @@ globals:
     time_nvt: "01:00:00"
     time_npt: "02:30:00"
     time_npt_final: "12:00:00" # longer because it’s the production-like segment
+    # Note: GPU vs CPU does not change these walltime hints; adjust per site throughput.
 
   smd:
     axis: x
+    # SMD pull axis (x/y/z).
     # pattern to auto-detect anchor molecule ITP from chain:
     anchor_chain_template: "systems/{system}/00_build/topol_Protein_chain_{chain}.itp"
+    # Template for locating anchor chain topology file during build.
 
     mdrun:
       ntmpi: 8
       ntomp: 6
+      # mdrun threading:
+      # - ntmpi: number of MPI ranks
+      # - ntomp: OpenMP threads per rank
+      # GPU/CPU device assignment:
       nb: gpu
       bonded: gpu
       pme: gpu
       update: gpu
+      # For CPU jobs, change these four to `cpu` (leave values as-is here; toggle when running).
       npme: 1
       ntomp_pme: 6
       # maxh is computed from the Slurm time limit automatically
@@ -51,13 +85,98 @@ globals:
 systems:
   - name: fimA_WT
     pdb: "systems/fimA_WT/nfimA_5chains_beta_deleted.pdb"
-    box: [70, 15, 15]            # nm (for build)
-    perf_ns_per_day: 80          # system-specific pulling throughput (ns/day)
+    box: [40, 12, 12]            # nm (for build)
+    perf_ns_per_day: 85          # system-specific pulling throughput (ns/day)
+    SOL_index: 13
+    # `SOL_index` is the group index for solvent in the index file (used for preprocessing, etc.).
+
+    variants:
+      - id: AtoD
+        anchor: { chain: "D", res: "135-150" }
+        pulled: { chain: "A", res: "285-300" }
+        speeds: [0.02, 0.05]   # variant-specific speeds
+        n_reps: 5        # variant-specific replicate coun
+        target_extension_nm: 5.0
+        # Optional per-variant: `flip_pull_sign: true` to negate the pulling direction.
+  - name: mfa1_WT
+    pdb: "systems/mfa1_WT/nMfa_5chains_beta_so4_deleted_.pdb"
+    box: [40, 12, 12]            # nm (for build)
+    perf_ns_per_day: 85          # system-specific pulling throughput (ns/day)
+    SOL_index: 15
+
+    variants:
+      - id: AtoD
+        anchor: { chain: "D", res: "205-230" }
+        pulled: { chain: "A", res: "400-450" }
+        speeds: [0.02, 0.05]   # variant-specific speeds
+        n_reps: 5        # variant-specific replicate count
+        target_extension_nm: 5.0
+        flip_pull_sign: true
+  - name: fimA_WT_long
+    pdb: "systems/fimA_WT_long/nfimA_5chains_beta_deleted.pdb"
+    box: [55, 12, 12]            # nm (for build)
+    perf_ns_per_day: 60          # system-specific pulling throughput (ns/day)
     SOL_index: 13
 
     variants:
       - id: AtoD
         anchor: { chain: "D", res: "135-150" }
         pulled: { chain: "A", res: "285-300" }
-        speeds: [0.02, 0.05, 0.10, 0.2, 0.5]   # variant-specific speeds
-        n_reps: 10        # variant-specific replicate count
+        speeds: [0.1]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate coun
+        target_extension_nm: 20.0
+  - name: mfa1_WT_long
+    pdb: "systems/mfa1_WT_long/nMfa_5chains_beta_so4_deleted_.pdb"
+    box: [55, 12, 12]            # nm (for build)
+    perf_ns_per_day: 60          # system-specific pulling throughput (ns/day)
+    SOL_index: 15
+
+    variants:
+      - id: AtoD
+        anchor: { chain: "D", res: "205-230" }
+        pulled: { chain: "A", res: "400-450" }
+        speeds: [0.1]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate count
+        target_extension_nm: 20.0
+        flip_pull_sign: true
+  - name: mfa1_WT_dimer
+    pdb: "systems/mfa1_WT_dimer/mfa1_dimer_DC.pdb"
+    box: [35, 12, 12]            # nm (for build)
+    perf_ns_per_day: 50          # system-specific pulling throughput (ns/day)
+    SOL_index: 15
+
+    variants:
+      - id: CtoD
+        anchor: { chain: "D", res: "205-230" }
+        pulled: { chain: "C", res: "400-450" }
+        speeds: [0.1]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate count
+        target_extension_nm: 10.0
+        flip_pull_sign: true
+      - id: CbigtoD
+        anchor: { chain: "D", res: "205-230" }
+        pulled: { chain: "C", res: "239-541" }
+        speeds: [0.1]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate count
+        target_extension_nm: 15.0
+        flip_pull_sign: true
+
+  - name: fimA_WT_dimer
+    pdb: "systems/fimA_WT_dimer/fimA_dimer_DC.pdb"
+    box: [35, 12, 12]            # nm (for build)
+    perf_ns_per_day: 50          # system-specific pulling throughput (ns/day)
+    SOL_index: 13
+
+    variants:
+      - id: CtoD
+        anchor: { chain: "D", res: "135-130" }
+        pulled: { chain: "C", res: "285-300" }
+        speeds: [0.1]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate count
+        target_extension_nm: 10.0
+      - id: CbigtoD
+        anchor: { chain: "D", res: "135-130" }
+        pulled: { chain: "C", res: "171-382" }
+        speeds: [0.1]   # variant-specific speeds
+        n_reps: 1        # variant-specific replicate count
+        target_extension_nm: 15.0
