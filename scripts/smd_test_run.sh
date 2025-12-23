@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Single-line SMD test wrapper: submit a short Slurm job for GPU or CPU
 # - Prepares the run via smd_runner.sh
-# - Runs mdrun for ~6 min using -maxh 0.1 (request 10 min walltime)
+# - Runs mdrun for ~10 min using -maxh 0.1 (request 15 min walltime)
 # - Intended to gauge performance before full SMD arrays
 #
 # Usage:
@@ -115,7 +115,7 @@ PYEOF
 #!/usr/bin/env bash
 #SBATCH --job-name=smdt_L${LN}
 #SBATCH --partition=${PART}
-#SBATCH --time=00:10:00
+#SBATCH --time=00:15:00
 #SBATCH --output=logs/smdt_%j.out
 SB
   if [[ "$MODE" == "cpu" ]]; then
