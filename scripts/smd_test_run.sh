@@ -75,15 +75,35 @@ IFS=',' read -r -a LINES <<< "$LINE_SPEC"
 mkdir -p logs tmp
 
 for LN in "${LINES[@]}"; do
-  # Extract CSV line (skip header)
+  # Extract CSV line (NR==N means line N, where line 1 is header, line 2+ are data)
   LINE_TXT=$(awk -F, -v N="$LN" 'NR==N{print $0}' "$MAN")
   if [[ -z "$LINE_TXT" ]]; then
     echo "WARN: no manifest row at line $LN; skipping" >&2
     continue
   fi
+  
+  # Skip header line
+  if [[ "$LINE_TXT" =~ ^system,variant, ]]; then
+    echo "WARN: line $LN is the CSV header; skipping" >&2
+    continue
+  fi
 
-  # Parse fields to derive run dir for optional cleanup
-  read -r system variant replicate speed_nm_per_ns _dt _k _axis _perf _start _tpr _xtc start_id _anch _cap <<<$(echo "$LINE_TXT" | awk -F, '{print $1,$2,$3,$4,$6,$5,$8,$9,$10,$11,$12,$13,$14,$15}')
+  # Parse minimal fields needed for run dir (for optional cleanup)
+  # Use Python to reliably parse CSV and extract needed fields
+  read -r system variant speed_nm_per_ns replicate start_id < <(python3 - <<PY
+import sys
+line = r"""${LINE_TXT}"""
+fields = line.split(',')
+# CSV order: system,variant,replicate,speed_nm_per_ns,...,start_id (field 13, index 12)
+system = fields[0].strip('"')
+variant = fields[1].strip('"')
+replicate = fields[2].strip('"')
+speed = fields[3].strip('"')
+start_id = fields[12].strip('"') if len(fields) > 12 else ""
+print(f"{system} {variant} {speed} {replicate} {start_id}")
+PY
+)
+  
   # Format speed tag
   vtag=$(python3 - <<PY
 s=float("${speed_nm_per_ns}")
