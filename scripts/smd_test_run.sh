@@ -113,25 +113,25 @@ PYEOF
   job="tmp/smd_test_${MODE}_L${LN}.sbatch"
   cat > "$job" <<SB
 #!/usr/bin/env bash
-#SBATCH --job-name="smdt_L${LN}"
-#SBATCH --partition="${PART}"
-#SBATCH --time="00:10:00"
-#SBATCH --output="logs/smdt_%j.out"
+#SBATCH --job-name=smdt_L${LN}
+#SBATCH --partition=${PART}
+#SBATCH --time=00:10:00
+#SBATCH --output=logs/smdt_%j.out
 SB
   if [[ "$MODE" == "cpu" ]]; then
     cat >> "$job" <<SB
-#SBATCH --nodes="${NODES}"
-#SBATCH --ntasks-per-node="${NTASKS_PER_NODE}"
-#SBATCH --cpus-per-task="${CPUS}"
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
+#SBATCH --cpus-per-task=${CPUS}
 SB
   else
     if [[ -n "$GRES_SPEC" ]]; then
       cat >> "$job" <<SB
-#SBATCH --gres="gpu:${GRES_SPEC}"
+#SBATCH --gres=gpu:${GRES_SPEC}
 SB
     fi
     cat >> "$job" <<SB
-#SBATCH --cpus-per-task="${CPUS}"
+#SBATCH --cpus-per-task=${CPUS}
 SB
   fi
 
