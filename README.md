@@ -110,14 +110,31 @@ Inspect the plots to ensure systems are equilibrated before proceeding to SMD.
 
 ---
 
-### 6. Build SMD Manifest
-Sample starting frames from the final NPT trajectory and generate the SMD manifest:
+### 6. Sample Starting Frames
+Extract starting configurations from equilibrated trajectories:
+```bash
+make posteq-sample
+```
+
+**What it does**: For each system/variant, samples frames from the `npt_final.xtc` trajectory:
+- Discards an initial warmup period (default: 2 ns from `equilibrium_md.warmup_ns`)
+- Picks frames at regular intervals (default: every 100 ps from `equilibrium_md.sample_every_ps`)
+- Writes frame metadata (time, start_id) to `manifests/starts/<system>_<variant>__*.csv`
+
+**Why**: Using multiple diverse starting frames from equilibrium improves statistical sampling of pulling behavior. Each replicate can start from a different equilibrated snapshot, capturing different initial conformations.
+
+**Output**: `manifests/starts/<system>_<variant>__*.csv` with sampled frame times and IDs
+
+---
+
+### 7. Build SMD Manifest
+Generate the complete SMD job manifest:
 ```bash
 make smd-manifest
 ```
 
 **What it does**: 
-1. **Samples starting frames** from the equilibrated `npt_final.xtc` trajectory, discarding an initial warmup period (default: 2 ns) and picking frames at regular intervals (default: every 100 ps).
+1. **Reads sampled frames** from `manifests/starts/` (created in step 6)
 2. **Generates `manifests/smd_manifest.csv`** with one row per SMD run, combining:
    - Each system/variant
    - Each pull speed
@@ -132,7 +149,7 @@ make smd-manifest
 
 ---
 
-### 7. Performance Testing (Optional but Recommended)
+### 8. Performance Testing (Optional but Recommended)
 Run short test jobs (~6 min with `-maxh 0.1`) to gauge performance for different box sizes and tune `perf_ns_per_day` in `config.yaml`.
 
 **GPU test** (lines 2 and 5 from manifest):
@@ -163,7 +180,7 @@ grep -E "Performance|ns/day" logs/smdt_*.out
 ### 8. Adjust Performance Estimates
 Based on test results, update `perf_ns_per_day` for each system in `config.yaml`. This ensures accurate walltime requests.
 
-**What it does**: You manually edit `config.yaml` to set realistic throughput values per system based on observed performance from step 7.
+**What it does**: You manually edit `config.yaml` to set realistic throughput values per system based on observed performance from step 8.
 
 **Why**: The submission script calculates Slurm walltime as: `(target_extension_nm / speed_nm_per_ns) / perf_ns_per_day × 24 hours × safety_factor`. Accurate estimates ensure jobs complete successfully without requesting excessive time.
 
@@ -171,7 +188,7 @@ Based on test results, update `perf_ns_per_day` for each system in `config.yaml`
 
 ---
 
-### 9. Dry-Run SMD Submission
+### 10. Dry-Run SMD Submission
 Preview which jobs will be submitted without actually queuing them:
 
 **GPU dry-run**:
@@ -192,7 +209,7 @@ Review the printed job details (system, speed, replicate counts, walltime, resou
 
 ---
 
-### 10. Submit SMD Arrays
+### 11. Submit SMD Arrays
 Once satisfied with the dry-run output:
 
 **GPU mode** (default):
@@ -236,7 +253,7 @@ tail -f logs/pulls_<array_id>_<task_id>.out
 
 ---
 
-### 11. Post-Processing: Trajectories and Movies
+### 12. Post-Processing: Trajectories and Movies
 
 #### Preprocess Trajectories
 Extract protein-only, PBC-fixed, centered trajectories with time-based striding:
@@ -617,29 +634,32 @@ make status  # wait for completion
 make analyze-eq SYS=fimA_WT
 make analyze-eq SYS=mfa1_WT
 
-# 4. Generate SMD manifest
+# 4. Sample starting frames
+make posteq-sample
+
+# 5. Generate SMD manifest
 make smd-manifest
 
-# 5. Performance test (GPU)
+# 6. Performance test (GPU)
 make smd-test-gpu LINES=2,5 CLEAN=1
 tail -f $(ls -t logs/smdt_*.out | head -n 1)
 grep "Performance" logs/smdt_*.out
 # Update perf_ns_per_day in config.yaml
 
-# 6. Dry-run SMD submission
+# 7. Dry-run SMD submission
 SMD_DEBUG=1 SLURM_TEST_ONLY=1 make smd-submit-new
 
-# 7. Submit SMD arrays
+# 8. Submit SMD arrays
 make smd-submit-new
 make status
 
-# 8. Wait for completion, then preprocess
+# 9. Wait for completion, then preprocess
 make preproc-traj J=8
 
-# 9. Generate movies
+# 10. Generate movies
 make movies
 
-# 10. Enjoy your fimbrial dynamics!
+# 11. Enjoy your fimbrial dynamics!
 ```
 
 ---
