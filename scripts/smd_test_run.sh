@@ -88,35 +88,32 @@ for LN in "${LINES[@]}"; do
     continue
   fi
 
-  # Parse minimal fields needed for run dir (for optional cleanup)
-  # Use Python to reliably parse CSV and extract needed fields
-  read -r system variant speed_nm_per_ns replicate start_id < <(python3 - <<PY
-import sys
-line = r"""${LINE_TXT}"""
-fields = line.split(',')
-# CSV order: system,variant,replicate,speed_nm_per_ns,...,start_id (field 13, index 12)
-system = fields[0].strip('"')
-variant = fields[1].strip('"')
-replicate = fields[2].strip('"')
-speed = fields[3].strip('"')
-start_id = fields[12].strip('"') if len(fields) > 12 else ""
-print(f"{system} {variant} {speed} {replicate} {start_id}")
-PY
+  # Extract run directory path for optional cleanup using Python CSV parser
+  run_dir=$(python3 - "$MAN" "$LN" "$ROOT_DIR" <<'PYEOF'
+import sys, csv
+manifest, line_num, root = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+with open(manifest, 'r') as f:
+    reader = csv.DictReader(f)
+    for i, row in enumerate(reader, start=2):  # start=2 because line 1 is header
+        if i == line_num:
+            speed = float(row['speed_nm_per_ns'])
+            vtag = f"v{speed:.3f}"
+            path = f"{root}/smd/{row['system']}/{row['variant']}/{vtag}/rep{row['replicate']}/{row['start_id']}"
+            print(path)
+            break
+PYEOF
 )
-  
-  # Format speed tag
-  vtag=$(python3 - <<PY
-s=float("${speed_nm_per_ns}")
-print(f"v{s:.3f}")
-PY
-)
-  run_dir="$ROOT_DIR/smd/${system}/${variant}/${vtag}/rep${replicate}/${start_id}"
+
+  if [[ -z "$run_dir" ]]; then
+    echo "ERROR: failed to parse run directory from line $LN" >&2
+    continue
+  fi
 
   # Build sbatch script
   job="tmp/smd_test_${MODE}_L${LN}.sbatch"
   cat > "$job" <<SB
 #!/usr/bin/env bash
-#SBATCH --job-name="smdt_${system}_${variant}_L${LN}"
+#SBATCH --job-name="smdt_L${LN}"
 #SBATCH --partition="${PART}"
 #SBATCH --time="00:10:00"
 #SBATCH --output="logs/smdt_%j.out"
