@@ -75,8 +75,8 @@ IFS=',' read -r -a LINES <<< "$LINE_SPEC"
 mkdir -p logs tmp
 
 for LN in "${LINES[@]}"; do
-  # Extract CSV line (NR==N means line N, where line 1 is header, line 2+ are data)
-  LINE_TXT=$(awk -F, -v N="$LN" 'NR==N{print $0}' "$MAN")
+  # Extract CSV line using sed (1-based line number)
+  LINE_TXT=$(sed -n "${LN}p" "$MAN")
   if [[ -z "$LINE_TXT" ]]; then
     echo "WARN: no manifest row at line $LN; skipping" >&2
     continue
@@ -84,7 +84,7 @@ for LN in "${LINES[@]}"; do
   
   # Skip header line
   if [[ "$LINE_TXT" =~ ^system,variant, ]]; then
-    echo "WARN: line $LN is the CSV header; skipping" >&2
+    echo "WARN: line $LN is the CSV header; use line 2+ for data rows" >&2
     continue
   fi
 
