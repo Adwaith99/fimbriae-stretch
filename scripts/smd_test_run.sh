@@ -72,6 +72,9 @@ NTASKS_PER_NODE="${CFG_LINES[6]}"
 
 IFS=',' read -r -a LINES <<< "$LINE_SPEC"
 
+echo "[smd-test] Parsed LINES array: ${LINES[@]}" >&2
+echo "[smd-test] Will process ${#LINES[@]} line(s)" >&2
+
 mkdir -p logs tmp
 
 for LN in "${LINES[@]}"; do
@@ -170,9 +173,10 @@ SB
   sbatch_output=$(sbatch "$job" 2>&1)
   sbatch_status=$?
   
-  # Print sbatch output
-  echo "[sbatch output]"
-  echo "$sbatch_output"
+  # Print sbatch output to stderr so it shows up
+  echo "========== sbatch output ==========" >&2
+  echo "$sbatch_output" >&2
+  echo "==================================" >&2
   
   if [[ $sbatch_status -ne 0 ]]; then
     echo "[smd-test] ERROR: sbatch failed with status $sbatch_status" >&2
