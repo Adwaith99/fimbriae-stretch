@@ -78,7 +78,7 @@ for LN in "${LINES[@]}"; do
   # Extract CSV line using sed (1-based line number)
   LINE_TXT=$(sed -n "${LN}p" "$MAN")
   if [[ -z "$LINE_TXT" ]]; then
-    echo "WARN: no manifest row at line $LN; skipping" >&2
+    echo "ERROR: manifest line $LN is empty or missing" >&2
     continue
   fi
   
@@ -87,6 +87,8 @@ for LN in "${LINES[@]}"; do
     echo "WARN: line $LN is the CSV header; use line 2+ for data rows" >&2
     continue
   fi
+
+  echo "[smd-test] Processing manifest line $LN: $(echo "$LINE_TXT" | cut -d, -f1-3)" >&2
 
   # Extract run directory path for optional cleanup using Python CSV parser
   run_dir=$(python3 - "$MAN" "$LN" "$ROOT_DIR" <<'PYEOF'
@@ -163,6 +165,20 @@ SB
     printf '%s\n' "rm -rf \"$run_dir\"" >> "$job"
   fi
 
-  jid=$(sbatch "$job" | awk '{print $NF}')
-  echo "[smd-test] Submitted ${MODE} test for line ${LN} as job ${jid}"
+  # Submit with verbose output for debugging
+  echo "[smd-test] Submitting sbatch for line $LN..." >&2
+  sbatch_output=$(sbatch "$job" 2>&1)
+  sbatch_status=$?
+  
+  # Print sbatch output
+  echo "[sbatch output]"
+  echo "$sbatch_output"
+  
+  if [[ $sbatch_status -ne 0 ]]; then
+    echo "[smd-test] ERROR: sbatch failed with status $sbatch_status" >&2
+    continue
+  fi
+  
+  jid=$(echo "$sbatch_output" | awk '{print $NF}')
+  echo "[smd-test] Submitted ${MODE} test for line ${LN} as job ${jid}" >&2
 done
