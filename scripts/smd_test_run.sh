@@ -89,10 +89,11 @@ echo "[smd-test] Before entering main loop, LINES[0]='${LINES[0]}'" >&2
 
 mkdir -p logs tmp
 
-# Iterate using explicit element access to avoid IFS issues
-for ((i=0; i<${#LINES[@]}; i++)); do
-  LN="${LINES[$i]}"
-  echo "[smd-test] === ITERATION $((i+1)) of ${#LINES[@]}: LN=$LN ===" >&2
+# Simple iteration: use while loop with explicit counter (avoids bash array scope issues)
+line_idx=0
+while [[ $line_idx -lt ${#LINES[@]} ]]; do
+  LN="${LINES[$line_idx]}"
+  echo "[smd-test] === ITERATION $((line_idx+1)) of ${#LINES[@]}: line_idx=$line_idx, LN=$LN ===" >&2
   
   # Extract CSV line using sed (1-based line number)
   LINE_TXT=$(sed -n "${LN}p" "$MAN")
@@ -207,4 +208,6 @@ SB
   
   jid=$(echo "$sbatch_output" | awk '{print $NF}')
   echo "[smd-test] Submitted ${MODE} test for line ${LN} as job ${jid}" >&2
+  
+  ((line_idx++))
 done
