@@ -71,6 +71,7 @@ NODES="${CFG_LINES[5]}"
 NTASKS_PER_NODE="${CFG_LINES[6]}"
 
 IFS=',' read -r -a LINES <<< "$LINE_SPEC"
+IFS=$' \t\n'  # Reset IFS to default
 
 echo "[smd-test] Parsed LINES array: ${LINES[@]}" >&2
 echo "[smd-test] Will process ${#LINES[@]} line(s)" >&2
@@ -83,9 +84,10 @@ done
 
 mkdir -p logs tmp
 
-for idx in "${!LINES[@]}"; do
-  LN="${LINES[$idx]}"
-  echo "[smd-test] === ITERATION $((idx+1)) of ${#LINES[@]}: LN=$LN ===" >&2
+# Iterate using explicit element access to avoid IFS issues
+for ((i=0; i<${#LINES[@]}; i++)); do
+  LN="${LINES[$i]}"
+  echo "[smd-test] === ITERATION $((i+1)) of ${#LINES[@]}: LN=$LN ===" >&2
   
   # Extract CSV line using sed (1-based line number)
   LINE_TXT=$(sed -n "${LN}p" "$MAN")
