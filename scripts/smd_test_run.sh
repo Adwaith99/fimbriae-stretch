@@ -105,6 +105,7 @@ for idx in "${!LINES[@]}"; do
   echo "[smd-test] Processing manifest line $LN: $(echo "$LINE_TXT" | cut -d, -f1-3)" >&2
 
   # Extract run directory path for optional cleanup using Python CSV parser
+  echo "[smd-test] Extracting run_dir from Python CSV parser..." >&2
   run_dir=$(python3 - "$MAN" "$LN" "$ROOT_DIR" <<'PYEOF'
 import sys, csv
 manifest, line_num, root = sys.argv[1], int(sys.argv[2]), sys.argv[3]
@@ -119,6 +120,7 @@ with open(manifest, 'r') as f:
             break
 PYEOF
 )
+  echo "[smd-test] run_dir='$run_dir'" >&2
 
   if [[ -z "$run_dir" ]]; then
     echo "ERROR: failed to parse run directory from line $LN" >&2
@@ -180,8 +182,10 @@ SB
   fi
 
   # Submit with verbose output for debugging
-  echo "[smd-test] Submitting sbatch for line $LN..." >&2
-  sbatch_output=$(sbatch "$job" 2>&1)
+  echo "[smd-test] Job script location: $job" >&2
+  echo "[smd-test] About to submit sbatch..." >&2
+  
+  sbatch_output=$(sbatch "$job" 2>&1) || true
   sbatch_status=$?
   
   # Print sbatch output to stderr so it shows up
