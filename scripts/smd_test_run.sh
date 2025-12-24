@@ -76,11 +76,16 @@ IFS=$' \t\n'  # Reset IFS to default
 echo "[smd-test] Parsed LINES array: ${LINES[@]}" >&2
 echo "[smd-test] Will process ${#LINES[@]} line(s)" >&2
 
+# Debug: print config values in case one is interfering
+echo "[smd-test] CFG values: PART='$PART' NODES='$NODES' NTASKS='$NTASKS_PER_NODE' CPUS='$CPUS'" >&2
+
 # Debug: show each element
 echo "[smd-test] Array contents:" >&2
 for i in "${!LINES[@]}"; do
   echo "[smd-test]   LINES[$i]='${LINES[$i]}'" >&2
 done
+
+echo "[smd-test] Before entering main loop, LINES[0]='${LINES[0]}'" >&2
 
 mkdir -p logs tmp
 
