@@ -550,7 +550,7 @@ make reset-all
 ## Performance Tuning
 
 ### Estimating `perf_ns_per_day`
-1. Run short tests: `make smd-test-gpu LINES=2,5 CLEAN=1`
+1. Run short tests: `make smd-test-gpu LINE=2 CLEAN=1` (test one line at a time)
 2. Extract performance from logs: `grep "Performance" logs/smdt_*.out`
 3. Update `perf_ns_per_day` for each system in `config.yaml` to match observed throughput.
 4. Re-run dry-run to verify walltime estimates: `SMD_DEBUG=1 SLURM_TEST_ONLY=1 make smd-submit-new`
@@ -595,8 +595,8 @@ make reset-all
 ### SMD
 - `make smd-manifest`: Generate SMD manifest with sampled starts
 - `make smd-dry-run-one`: Test first manifest row locally (grompp only)
-- `make smd-test-gpu LINES=<N[,N2,...]> [CLEAN=1]`: Short GPU performance test
-- `make smd-test-cpu LINES=<N[,N2,...]> [CLEAN=1]`: Short CPU performance test
+- `make smd-test-gpu LINE=<N> [CLEAN=1]`: Short GPU performance test (single line)
+- `make smd-test-cpu LINE=<N> [CLEAN=1]`: Short CPU performance test (single line)
 - `make smd-submit-new`: Submit NEW SMD runs (GPU mode)
 - `make smd-submit-new-cpu`: Submit NEW SMD runs (CPU mode)
 - `make smd-clean-ledger`: Remove completed runs from ledger
@@ -640,8 +640,9 @@ make posteq-sample
 # 5. Generate SMD manifest
 make smd-manifest
 
-# 6. Performance test (GPU)
-make smd-test-gpu LINES=2,5 CLEAN=1
+# 6. Performance test (GPU) - run multiple lines separately
+make smd-test-gpu LINE=2 CLEAN=1
+make smd-test-gpu LINE=5 CLEAN=1
 tail -f $(ls -t logs/smdt_*.out | head -n 1)
 grep "Performance" logs/smdt_*.out
 # Update perf_ns_per_day in config.yaml
