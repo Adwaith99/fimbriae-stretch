@@ -77,9 +77,14 @@ echo "[smd-test] Will process ${#LINES[@]} line(s)" >&2
 
 mkdir -p logs tmp
 
-for LN in "${LINES[@]}"; do
+for idx in "${!LINES[@]}"; do
+  LN="${LINES[$idx]}"
+  echo "[smd-test] === ITERATION $((idx+1)) of ${#LINES[@]}: LN=$LN ===" >&2
+  
   # Extract CSV line using sed (1-based line number)
   LINE_TXT=$(sed -n "${LN}p" "$MAN")
+  echo "[smd-test] Extracted line text (first 80 chars): ${LINE_TXT:0:80}" >&2
+  
   if [[ -z "$LINE_TXT" ]]; then
     echo "ERROR: manifest line $LN is empty or missing" >&2
     continue
