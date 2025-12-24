@@ -7,8 +7,8 @@ set -euo pipefail
 # - Intended to gauge performance before full SMD arrays
 #
 # Usage:
-#   scripts/smd_test_run.sh gpu --lines 12[,34,...] [--clean]
-#   scripts/smd_test_run.sh cpu --lines 12[,34,...] [--clean]
+#   scripts/smd_test_run.sh gpu --line 2 [--clean]
+#   scripts/smd_test_run.sh cpu --line 2 [--clean]
 #
 # Notes:
 # - GPU/CPU resources and modules are taken from config.yaml (globals.slurm)
@@ -22,18 +22,18 @@ MAN="manifests/smd_manifest.csv"
 CFG="config.yaml"
 
 if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 <gpu|cpu> --lines <N[,N2,...]> [--clean]" >&2
+  echo "Usage: $0 <gpu|cpu> --line <N> [--clean]" >&2
   exit 2
 fi
 
 MODE="$1"; shift
 CLEAN=0
-LINE_SPEC=""
+LINE_NUM=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --lines)
-      LINE_SPEC="$2"; shift 2;;
+    --line)
+      LINE_NUM="$2"; shift 2;;
     --clean)
       CLEAN=1; shift;;
     *)
@@ -41,8 +41,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$LINE_SPEC" ]]; then
-  echo "ERROR: specify --lines <N[,N2,...]>" >&2
+if [[ -z "$LINE_NUM" ]]; then
+  echo "ERROR: specify --line <N>" >&2
   exit 2
 fi
 
@@ -70,51 +70,28 @@ GRES_SPEC="${CFG_LINES[4]}"
 NODES="${CFG_LINES[5]}"
 NTASKS_PER_NODE="${CFG_LINES[6]}"
 
-IFS=',' read -r -a LINES <<< "$LINE_SPEC"
-IFS=$' \t\n'  # Reset IFS to default
-
-echo "[smd-test] Parsed LINES array: ${LINES[@]}" >&2
-echo "[smd-test] Will process ${#LINES[@]} line(s)" >&2
-
-# Debug: print config values in case one is interfering
-echo "[smd-test] CFG values: PART='$PART' NODES='$NODES' NTASKS='$NTASKS_PER_NODE' CPUS='$CPUS'" >&2
-
-# Debug: show each element
-echo "[smd-test] Array contents:" >&2
-for i in "${!LINES[@]}"; do
-  echo "[smd-test]   LINES[$i]='${LINES[$i]}'" >&2
-done
-
-echo "[smd-test] Before entering main loop, LINES[0]='${LINES[0]}'" >&2
+echo "[smd-test] Testing manifest line $LINE_NUM (MODE=$MODE)" >&2
 
 mkdir -p logs tmp
 
-# Simple iteration: use while loop with explicit counter (avoids bash array scope issues)
-line_idx=0
-while [[ $line_idx -lt ${#LINES[@]} ]]; do
-  LN="${LINES[$line_idx]}"
-  echo "[smd-test] === ITERATION $((line_idx+1)) of ${#LINES[@]}: line_idx=$line_idx, LN=$LN ===" >&2
-  
-  # Extract CSV line using sed (1-based line number)
-  LINE_TXT=$(sed -n "${LN}p" "$MAN")
-  echo "[smd-test] Extracted line text (first 80 chars): ${LINE_TXT:0:80}" >&2
-  
-  if [[ -z "$LINE_TXT" ]]; then
-    echo "ERROR: manifest line $LN is empty or missing" >&2
-    continue
-  fi
-  
-  # Skip header line
-  if [[ "$LINE_TXT" =~ ^system,variant, ]]; then
-    echo "WARN: line $LN is the CSV header; use line 2+ for data rows" >&2
-    continue
-  fi
+# Extract CSV line using sed (1-based line number)
+LINE_TXT=$(sed -n "${LINE_NUM}p" "$MAN")
+if [[ -z "$LINE_TXT" ]]; then
+  echo "ERROR: manifest line $LINE_NUM is empty or missing" >&2
+  exit 1
+fi
 
-  echo "[smd-test] Processing manifest line $LN: $(echo "$LINE_TXT" | cut -d, -f1-3)" >&2
+# Skip header line
+if [[ "$LINE_TXT" =~ ^system,variant, ]]; then
+  echo "ERROR: line $LINE_NUM is the CSV header; use line 2+ for data rows" >&2
+  exit 1
+fi
 
-  # Extract run directory path for optional cleanup using Python CSV parser
-  echo "[smd-test] Extracting run_dir from Python CSV parser..." >&2
-  run_dir=$(python3 - "$MAN" "$LN" "$ROOT_DIR" <<'PYEOF'
+echo "[smd-test] Processing manifest line $LINE_NUM: $(echo "$LINE_TXT" | cut -d, -f1-3)" >&2
+
+# Extract run directory path for optional cleanup using Python CSV parser
+echo "[smd-test] Extracting run_dir from Python CSV parser..." >&2
+run_dir=$(python3 - "$MAN" "$LINE_NUM" "$ROOT_DIR" <<'PYEOF'
 import sys, csv
 manifest, line_num, root = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 with open(manifest, 'r') as f:
@@ -128,86 +105,84 @@ with open(manifest, 'r') as f:
             break
 PYEOF
 )
-  echo "[smd-test] run_dir='$run_dir'" >&2
 
-  if [[ -z "$run_dir" ]]; then
-    echo "ERROR: failed to parse run directory from line $LN" >&2
-    continue
-  fi
+if [[ -z "$run_dir" ]]; then
+  echo "ERROR: failed to parse run directory from line $LINE_NUM" >&2
+  exit 1
+fi
 
-  # Build sbatch script
-  job="tmp/smd_test_${MODE}_L${LN}.sbatch"
-  cat > "$job" <<SB
+echo "[smd-test] run_dir='$run_dir'" >&2
+
+# Build sbatch script
+job="tmp/smd_test_${MODE}_L${LINE_NUM}.sbatch"
+cat > "$job" <<SB
 #!/usr/bin/env bash
-#SBATCH --job-name=smdt_L${LN}
+#SBATCH --job-name=smdt_L${LINE_NUM}
 #SBATCH --partition=${PART}
 #SBATCH --time=00:15:00
 #SBATCH --output=logs/smdt_%j.out
 SB
-  if [[ "$MODE" == "cpu" ]]; then
-    cat >> "$job" <<SB
+if [[ "$MODE" == "cpu" ]]; then
+  cat >> "$job" <<SB
 #SBATCH --nodes=${NODES}
 #SBATCH --ntasks-per-node=${NTASKS_PER_NODE}
 #SBATCH --cpus-per-task=${CPUS}
 SB
-  else
-    if [[ -n "$GRES_SPEC" ]]; then
-      cat >> "$job" <<SB
+else
+  if [[ -n "$GRES_SPEC" ]]; then
+    cat >> "$job" <<SB
 #SBATCH --gres=gpu:${GRES_SPEC}
 SB
-    fi
-    cat >> "$job" <<SB
+  fi
+  cat >> "$job" <<SB
 #SBATCH --cpus-per-task=${CPUS}
 SB
-  fi
+fi
 
-  cat >> "$job" <<'SB'
+cat >> "$job" <<'SB'
 set -euo pipefail
 module purge || true
 SB
-  if [[ -n "$GMX_MOD" ]]; then
-    echo "module load ${GMX_MOD}" >> "$job"
-  fi
-  cat >> "$job" <<SB
+if [[ -n "$GMX_MOD" ]]; then
+  echo "module load ${GMX_MOD}" >> "$job"
+fi
+cat >> "$job" <<SB
 export GMX_MODULE="${GMX_MOD}"
 SB
-  if [[ "$MODE" == "cpu" ]]; then
-    cat >> "$job" <<'SB'
+if [[ "$MODE" == "cpu" ]]; then
+  cat >> "$job" <<'SB'
 export GMX_CMD="srun gmx_mpi mdrun -maxh 0.1"
 SB
-  else
-    cat >> "$job" <<'SB'
+else
+  cat >> "$job" <<'SB'
 export GMX_CMD="gmx mdrun -maxh 0.1"
 SB
-  fi
+fi
 
-  # Invoke runner with the manifest line
-  printf '%s\n' "bash scripts/smd_runner.sh \"$LINE_TXT\"" >> "$job"
+# Invoke runner with the manifest line
+printf '%s\n' "bash scripts/smd_runner.sh \"$LINE_TXT\"" >> "$job"
 
-  # Optional cleanup
-  if [[ $CLEAN -eq 1 ]]; then
-    printf '%s\n' "rm -rf \"$run_dir\"" >> "$job"
-  fi
+# Optional cleanup
+if [[ $CLEAN -eq 1 ]]; then
+  printf '%s\n' "rm -rf \"$run_dir\"" >> "$job"
+fi
 
-  # Submit with verbose output for debugging
-  echo "[smd-test] Job script location: $job" >&2
-  echo "[smd-test] About to submit sbatch..." >&2
-  
-  sbatch_output=$(sbatch "$job" 2>&1) || true
-  sbatch_status=$?
-  
-  # Print sbatch output to stderr so it shows up
-  echo "========== sbatch output ==========" >&2
-  echo "$sbatch_output" >&2
-  echo "==================================" >&2
-  
-  if [[ $sbatch_status -ne 0 ]]; then
-    echo "[smd-test] ERROR: sbatch failed with status $sbatch_status" >&2
-    continue
-  fi
-  
-  jid=$(echo "$sbatch_output" | awk '{print $NF}')
-  echo "[smd-test] Submitted ${MODE} test for line ${LN} as job ${jid}" >&2
-  
-  ((line_idx++))
-done
+# Submit job
+echo "[smd-test] Job script: $job" >&2
+echo "[smd-test] Submitting sbatch..." >&2
+
+sbatch_output=$(sbatch "$job" 2>&1) || sbatch_status=$?
+sbatch_status=${sbatch_status:-$?}
+
+# Print sbatch output
+echo "========== sbatch output ==========" >&2
+echo "$sbatch_output" >&2
+echo "==================================" >&2
+
+if [[ $sbatch_status -ne 0 ]]; then
+  echo "[smd-test] ERROR: sbatch failed with status $sbatch_status" >&2
+  exit 1
+fi
+
+jid=$(echo "$sbatch_output" | awk '{print $NF}')
+echo "[smd-test] SUCCESS: Submitted ${MODE} test for line ${LINE_NUM} as job ${jid}" >&2
