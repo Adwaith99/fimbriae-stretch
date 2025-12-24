@@ -75,6 +75,12 @@ IFS=',' read -r -a LINES <<< "$LINE_SPEC"
 echo "[smd-test] Parsed LINES array: ${LINES[@]}" >&2
 echo "[smd-test] Will process ${#LINES[@]} line(s)" >&2
 
+# Debug: show each element
+echo "[smd-test] Array contents:" >&2
+for i in "${!LINES[@]}"; do
+  echo "[smd-test]   LINES[$i]='${LINES[$i]}'" >&2
+done
+
 mkdir -p logs tmp
 
 for idx in "${!LINES[@]}"; do
