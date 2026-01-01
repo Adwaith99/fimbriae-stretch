@@ -469,7 +469,7 @@ Template block; adjust per your systems:
 #### `systems[].variants[]`
 - `id`: Variant identifier
 - `anchor`: `{chain, res}` defining anchored residues
-- `pulled`: `{chain, res}` defining pulled residues
+- `pulled`: `{chain, res}` defining pulled residues. `res` may be a single range or multiple comma-separated ranges, e.g. `"239-341"` or `"239-341,400-450"`. All ranges will be merged into a single `[ Pulled ]` index group by the builder.
 - `speeds`: Variant-specific pull speeds (nm/ns)
 - `n_reps`: Variant-specific replicate count
 - `target_extension_nm`: Variant-specific extension target

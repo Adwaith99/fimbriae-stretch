@@ -82,7 +82,10 @@ def main():
     var = get_variant(cfg, system, variant_id)
     a_chain, a_rng = var["anchor"]["chain"], var["anchor"]["res"]
     p_chain, p_rng = var["pulled"]["chain"], var["pulled"]["res"]
-    a1,a2 = parse_range(a_rng); p1,p2 = parse_range(p_rng)
+    a1,a2 = parse_range(a_rng)
+    # support multiple pulled ranges separated by commas (e.g. "239-341,400-450")
+    p_ranges = [r.strip() for r in str(p_rng).split(',') if r.strip()]
+    parsed_p_ranges = [parse_range(r) for r in p_ranges]
 
     build_dir = os.path.join(root, "systems", system, "00_build")
     clean_pdb = os.path.join(build_dir, "clean.pdb")
@@ -92,18 +95,123 @@ def main():
     # A) composites on clean.pdb in one go
     info(f"SYSTEM={system} VARIANT={variant_id}")
     info(f"STEP A: make_ndx(clean.pdb) – composite groups")
-    script = f"chain {a_chain} & r {a1}-{a2}\nchain {p_chain} & r {p1}-{p2}\nq\n"
+    # Build make_ndx script: anchor + one or more pulled ranges
+    script_lines = [f"chain {a_chain} & r {a1}-{a2}"]
+    for pr in parsed_p_ranges:
+        script_lines.append(f"chain {p_chain} & r {pr[0]}-{pr[1]}")
+    script_lines.append("q")
+    script = "\n".join(script_lines) + "\n"
     run_cmd(["gmx","make_ndx","-f",clean_pdb,"-o",ndx_path,"-quiet"], cwd=build_dir, input_str=script)
 
     # Rename composite headers
     info("STEP A2: renaming composite headers → [ Anchor ] / [ Pulled ]")
     ndx_txt = open(ndx_path).read()
+    # Rename Anchor header (single range)
     ndx_txt2 = replace_header(ndx_txt, f"ch{a_chain}_&_r_{a1}-{a2}", "Anchor")
-    ndx_txt2 = replace_header(ndx_txt2, f"ch{p_chain}_&_r_{p1}-{p2}", "Pulled")
-    if ndx_txt2 == ndx_txt:
-        info("WARNING: composite headers not found exactly; verify index.ndx")
-    open(ndx_path,"w").write(ndx_txt2)
+
+    # For Pulled: find all composite headers created for each parsed range,
+    # collect their member indices and merge into a single [ Pulled ] group.
+    import itertools
+    # match any composite header for this chain: ch<chain>_&_r_<start> or ch<chain>_&_r_<start>-<end>
+    pulled_block_re = re.compile(rf"^\s*\[\s*ch{re.escape(p_chain)}_&_r_[0-9\-]+\s*\]\s*$", flags=re.MULTILINE)
+    lines = ndx_txt2.splitlines(keepends=True)
+
+    # Parse into blocks and collect pulled indices
+    blocks = []
+    cur = []
+    headers = []
+    for ln in lines:
+        if re.match(r"^\s*\[.*\]\s*$", ln):
+            if cur:
+                blocks.append((headers[-1] if headers else None, cur))
+            cur = [ln]
+            hdr = ln.strip()
+            headers.append(hdr)
+        else:
+            cur.append(ln)
+    if cur:
+        blocks.append((headers[-1] if headers else None, cur))
+
+    pulled_indices = []
+    new_blocks = []
+    for hdr, blk in blocks:
+        if hdr and pulled_block_re.match(hdr):
+            # gather indices from blk (skip header line)
+            for l in blk[1:]:
+                for tok in l.strip().split():
+                    if tok.isdigit(): pulled_indices.append(int(tok))
+            # skip adding this block (we will replace with merged Pulled)
+            continue
+        new_blocks.append(blk)
+
+    if pulled_indices:
+        # deduplicate while preserving order
+        seen = set(); uniq = []
+        for x in pulled_indices:
+            if x not in seen:
+                seen.add(x); uniq.append(x)
+        # format indices into lines (15 per line for readability)
+        idx_lines = []
+        for i in range(0, len(uniq), 15):
+            idx_lines.append(" ".join(str(x) for x in uniq[i:i+15]) + "\n")
+        pulled_block = [f"[ Pulled ]\n"] + idx_lines
+        new_blocks.append(pulled_block)
+    else:
+        info("WARNING: no pulled composite blocks found; verify index.ndx")
+
+    # write back
+    with open(ndx_path, "w") as fh:
+        for blk in new_blocks:
+            fh.writelines(blk)
     info(f"Wrote {os.path.relpath(ndx_path, build_dir)}")
+    # Post-build summary: report atom/residue coverage for the Pulled group
+    try:
+        if pulled_indices:
+            # uniq contains deduplicated atom indices in file order
+            atom_count = len(uniq)
+            # build mapping from atom serial -> (chain, residue)
+            serial_map = {}
+            with open(clean_pdb) as pf:
+                for line in pf:
+                    if line.startswith(('ATOM','HETATM')):
+                        try:
+                            serial = int(line[6:11])
+                            chain = line[21].strip()
+                            resid = int(line[22:26])
+                        except Exception:
+                            continue
+                        serial_map[serial] = (chain, resid)
+
+            from collections import defaultdict
+            ch_res = defaultdict(set)
+            for s in uniq:
+                if s in serial_map:
+                    ch, r = serial_map[s]
+                    ch_res[ch].add(r)
+
+            total_res = sum(len(v) for v in ch_res.values())
+            info(f"Pulled summary: {atom_count} atoms, {total_res} unique residues")
+
+            def make_ranges(sorted_list):
+                ranges = []
+                if not sorted_list:
+                    return ranges
+                start = prev = sorted_list[0]
+                for x in sorted_list[1:]:
+                    if x == prev + 1:
+                        prev = x
+                    else:
+                        ranges.append((start, prev))
+                        start = prev = x
+                ranges.append((start, prev))
+                return ranges
+
+            for ch in sorted(ch_res.keys()):
+                lst = sorted(ch_res[ch])
+                ranges = make_ranges(lst)
+                info(f"Pulled residues on chain '{ch}': {ranges}")
+    except Exception as e:
+        info(f"Pulled summary skipped due to error: {e}")
 
     # B) NonProtein from npt_final.tpr
     info("STEP B: make_ndx(npt_final.tpr) – NonProtein complement of Protein")
