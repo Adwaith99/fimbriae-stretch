@@ -112,7 +112,8 @@ def main():
     # For Pulled: find all composite headers created for each parsed range,
     # collect their member indices and merge into a single [ Pulled ] group.
     import itertools
-    pulled_block_re = re.compile(rf"^\s*\[\s*ch{re.escape(p_chain)}_&_r_(\d+)-(\d+)\s*\]\s*$", flags=re.MULTILINE)
+    # match any composite header for this chain: ch<chain>_&_r_<start> or ch<chain>_&_r_<start>-<end>
+    pulled_block_re = re.compile(rf"^\s*\[\s*ch{re.escape(p_chain)}_&_r_[0-9\-]+\s*\]\s*$", flags=re.MULTILINE)
     lines = ndx_txt2.splitlines(keepends=True)
 
     # Parse into blocks and collect pulled indices
@@ -163,7 +164,54 @@ def main():
         for blk in new_blocks:
             fh.writelines(blk)
     info(f"Wrote {os.path.relpath(ndx_path, build_dir)}")
-    info(f"Wrote {os.path.relpath(ndx_path, build_dir)}")
+    # Post-build summary: report atom/residue coverage for the Pulled group
+    try:
+        if pulled_indices:
+            # uniq contains deduplicated atom indices in file order
+            atom_count = len(uniq)
+            # build mapping from atom serial -> (chain, residue)
+            serial_map = {}
+            with open(clean_pdb) as pf:
+                for line in pf:
+                    if line.startswith(('ATOM','HETATM')):
+                        try:
+                            serial = int(line[6:11])
+                            chain = line[21].strip()
+                            resid = int(line[22:26])
+                        except Exception:
+                            continue
+                        serial_map[serial] = (chain, resid)
+
+            from collections import defaultdict
+            ch_res = defaultdict(set)
+            for s in uniq:
+                if s in serial_map:
+                    ch, r = serial_map[s]
+                    ch_res[ch].add(r)
+
+            total_res = sum(len(v) for v in ch_res.values())
+            info(f"Pulled summary: {atom_count} atoms, {total_res} unique residues")
+
+            def make_ranges(sorted_list):
+                ranges = []
+                if not sorted_list:
+                    return ranges
+                start = prev = sorted_list[0]
+                for x in sorted_list[1:]:
+                    if x == prev + 1:
+                        prev = x
+                    else:
+                        ranges.append((start, prev))
+                        start = prev = x
+                ranges.append((start, prev))
+                return ranges
+
+            for ch in sorted(ch_res.keys()):
+                lst = sorted(ch_res[ch])
+                ranges = make_ranges(lst)
+                info(f"Pulled residues on chain '{ch}': {ranges}")
+    except Exception as e:
+        info(f"Pulled summary skipped due to error: {e}")
 
     # B) NonProtein from npt_final.tpr
     info("STEP B: make_ndx(npt_final.tpr) – NonProtein complement of Protein")
