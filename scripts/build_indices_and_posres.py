@@ -235,13 +235,20 @@ def main():
         info("WARNING: 'Protein' group not found; skipping NonProtein")
         info("DONE."); return
     run_cmd(["gmx","make_ndx","-f",npt_tpr,"-n",ndx_path,"-o",ndx_path,"-quiet"], cwd=build_dir, input_str=f"! {prot_id}\nq\n")
-    # rename last block to NonProtein
-    block = last_group_block(ndx_path)
-    if block:
-        if re.match(r"^\s*\[.*\]\s*$", block[0]): block[0]="[ NonProtein ]\n"
-        txt = open(ndx_path).read().rstrip()+"\n"+"".join(block)
-        open(ndx_path,"w").write(txt)
-        info("Added [ NonProtein ]")
+    # Prefer replacing any '!Protein' composite header with [ NonProtein ]
+    ndx_all = open(ndx_path).read()
+    if re.search(r"^\s*\[\s*!\s*Protein\s*\]\s*$", ndx_all, flags=re.MULTILINE):
+        ndx_all2 = replace_header(ndx_all, "!Protein", "NonProtein")
+        open(ndx_path, "w").write(ndx_all2)
+        info("Renamed '!Protein' header to [ NonProtein ]")
+    else:
+        # fallback: append last block (older behavior)
+        block = last_group_block(ndx_path)
+        if block:
+            if re.match(r"^\s*\[.*\]\s*$", block[0]): block[0] = "[ NonProtein ]\n"
+            txt = open(ndx_path).read().rstrip() + "\n" + "".join(block)
+            open(ndx_path, "w").write(txt)
+            info("Added [ NonProtein ] (appended)")
     info("DONE.")
 
 if __name__=="__main__":
