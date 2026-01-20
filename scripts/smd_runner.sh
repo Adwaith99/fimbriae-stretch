@@ -320,6 +320,134 @@ fi
 echo "${nsteps}" > expected_nsteps.txt
 echo "[smd-runner] Expected nsteps: ${nsteps} (saved to expected_nsteps.txt)"
 
+############################
+# Resolve pbcatom indices if configured
+############################
+ANCHOR_PBCATOM=""
+PULLED_PBCATOM=""
+PBCATOM_LOG="pbcatom.log"
+
+# Extract pbcatom settings from config
+python3 - <<PY
+import yaml
+import json
+cfg = yaml.safe_load(open(r"${ROOT}/config.yaml"))
+pbcatom_info = {}
+for s in cfg.get("systems", []):
+  if s.get("name") == "${system}":
+    for v in s.get("variants", []):
+      if v.get("id") == "${variant}":
+        # Check anchor pbcatom
+        anchor_cfg = v.get("anchor", {})
+        if anchor_cfg.get("pbcatom_res"):
+          pbcatom_info["anchor"] = {
+            "res": anchor_cfg["pbcatom_res"],
+            "atom": anchor_cfg.get("pbcatom_atom", "CA")
+          }
+        # Check pulled pbcatom
+        pulled_cfg = v.get("pulled", {})
+        if pulled_cfg.get("pbcatom_res"):
+          pbcatom_info["pulled"] = {
+            "res": pulled_cfg["pbcatom_res"],
+            "atom": pulled_cfg.get("pbcatom_atom", "CA")
+          }
+        break
+print(json.dumps(pbcatom_info))
+PY
+) > pbcatom_config.json
+
+# Parse and resolve pbcatom indices
+python3 - <<'PY'
+import json
+import subprocess
+import sys
+
+try:
+    with open("pbcatom_config.json") as f:
+        pbcatom_info = json.load(f)
+except:
+    pbcatom_info = {}
+
+if not pbcatom_info:
+    sys.exit(0)  # No pbcatom config; continue normally
+
+gro_file = "start.gro"
+ndx_file = "index.ndx"
+log_file = "pbcatom.log"
+
+log_lines = []
+
+# Resolve anchor pbcatom
+if "anchor" in pbcatom_info:
+    cfg = pbcatom_info["anchor"]
+    resid = cfg["res"]
+    atomname = cfg["atom"]
+    try:
+        result = subprocess.run(
+            [
+                "python3",
+                "${ROOT}/scripts/find_pbcatom.py",
+                "--gro", gro_file,
+                "--ndx", ndx_file,
+                "--group", "Anchor",
+                "--resid", str(resid),
+                "--atom", atomname
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+        anchor_idx = int(result.stdout.strip())
+        log_lines.append(f"Anchor: found atom {anchor_idx} (resid={resid}, atom={atomname})")
+        with open("ANCHOR_PBCATOM", "w") as f:
+            f.write(str(anchor_idx))
+    except Exception as e:
+        print(f"[smd-runner] ERROR resolving anchor pbcatom: {e}", file=sys.stderr)
+        sys.exit(1)
+
+# Resolve pulled pbcatom
+if "pulled" in pbcatom_info:
+    cfg = pbcatom_info["pulled"]
+    resid = cfg["res"]
+    atomname = cfg["atom"]
+    try:
+        result = subprocess.run(
+            [
+                "python3",
+                "${ROOT}/scripts/find_pbcatom.py",
+                "--gro", gro_file,
+                "--ndx", ndx_file,
+                "--group", "Pulled",
+                "--resid", str(resid),
+                "--atom", atomname
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+        pulled_idx = int(result.stdout.strip())
+        log_lines.append(f"Pulled: found atom {pulled_idx} (resid={resid}, atom={atomname})")
+        with open("PULLED_PBCATOM", "w") as f:
+            f.write(str(pulled_idx))
+    except Exception as e:
+        print(f"[smd-runner] ERROR resolving pulled pbcatom: {e}", file=sys.stderr)
+        sys.exit(1)
+
+# Write log
+with open("${PBCATOM_LOG}", "w") as f:
+    for line in log_lines:
+        f.write(line + "\n")
+        print(f"[smd-runner] {line}")
+
+PY
+
+# Load resolved pbcatom indices
+[[ -f ANCHOR_PBCATOM ]] && ANCHOR_PBCATOM="$(cat ANCHOR_PBCATOM)" || ANCHOR_PBCATOM=""
+[[ -f PULLED_PBCATOM ]] && PULLED_PBCATOM="$(cat PULLED_PBCATOM)" || PULLED_PBCATOM=""
 
 ############################
 # Final pull.mdp (Option B: ALL atoms, 10 ps stride)
@@ -371,6 +499,18 @@ pull-coord1-start      = yes               ; let grompp compute initial distance
 pull-coord1-rate        = ${rate_signed}   ; base rate (nm/ps) possibly negated by variant flip
 pull-coord1-k           = ${k_kj}
 pull-print-components   = yes
+MDP
+
+# Conditionally inject pbcatom settings
+if [[ -n "${ANCHOR_PBCATOM}" ]]; then
+  echo "pull-group1-pbcatom             = ${ANCHOR_PBCATOM}" >> pull.mdp
+fi
+if [[ -n "${PULLED_PBCATOM}" ]]; then
+  echo "pull-group2-pbcatom             = ${PULLED_PBCATOM}" >> pull.mdp
+fi
+
+# Append output section
+cat >> pull.mdp <<MDP
 
 ; Output control (ALL atoms)
 nstxout                 = 0

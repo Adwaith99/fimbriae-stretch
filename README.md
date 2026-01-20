@@ -468,12 +468,31 @@ Template block; adjust per your systems:
 
 #### `systems[].variants[]`
 - `id`: Variant identifier
-- `anchor`: `{chain, res}` defining anchored residues
-- `pulled`: `{chain, res}` defining pulled residues. `res` may be a single range or multiple comma-separated ranges, e.g. `"239-341"` or `"239-341,400-450"`. All ranges will be merged into a single `[ Pulled ]` index group by the builder.
+- `anchor`: `{chain, res}` defining anchored residues. Optionally add `pbcatom_res` (residue number) and `pbcatom_atom` (atom name, default `"CA"`) to explicitly set `pull-group1-pbcatom` in the MDP.
+- `pulled`: `{chain, res}` defining pulled residues. `res` may be a single range or multiple comma-separated ranges, e.g. `"239-341"` or `"239-341,400-450"`. All ranges will be merged into a single `[ Pulled ]` index group by the builder. Optionally add `pbcatom_res` and `pbcatom_atom` to set `pull-group2-pbcatom`.
 - `speeds`: Variant-specific pull speeds (nm/ns)
 - `n_reps`: Variant-specific replicate count
 - `target_extension_nm`: Variant-specific extension target
 - `flip_pull_sign` (optional): Set `true` to negate pull direction
+
+**Example with pbcatom settings** (to fix `pull-coord1-geometry = direction-periodic` errors for large pull groups):
+```yaml
+variants:
+  - id: AtoD
+    anchor: { chain: "D", res: "205-230", pbcatom_res: 218, pbcatom_atom: "CA" }
+    pulled: { chain: "A", res: "394-458,249-271", pbcatom_res: 410, pbcatom_atom: "CA" }
+    speeds: [0.02, 0.1, 0.5]
+    n_reps: 5
+    target_extension_nm: 5.0
+    flip_pull_sign: true
+```
+When `pbcatom_res` is specified, the SMD prep stage will:
+1. Generate `start.gro` as usual.
+2. Resolve the atom index for `(chain, pbcatom_res, pbcatom_atom)` in the resulting structure.
+3. Inject `pull-group1-pbcatom = <idx>` and/or `pull-group2-pbcatom = <idx>` into `pull.mdp`.
+4. Log the resolved indices to `pbcatom.log` in the run directory.
+
+If `pbcatom_res` is absent, the old behavior is preserved (no explicit pbcatom lines in the MDP).
 
 ---
 
