@@ -328,7 +328,7 @@ PULLED_PBCATOM=""
 PBCATOM_LOG="pbcatom.log"
 
 # Extract pbcatom settings from config
-python3 - <<PY
+python3 - <<PY > pbcatom_config.json
 import yaml
 import json
 cfg = yaml.safe_load(open(r"${ROOT}/config.yaml"))
@@ -354,7 +354,6 @@ for s in cfg.get("systems", []):
         break
 print(json.dumps(pbcatom_info))
 PY
-) > pbcatom_config.json
 
 # Parse and resolve pbcatom indices
 python3 - <<PY
