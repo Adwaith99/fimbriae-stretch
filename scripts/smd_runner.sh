@@ -164,7 +164,8 @@ XTC_ABS="$(resolve_path "${final_xtc}")"
 ln -sf "${TPR_ABS}" final_npt.tpr
 ln -sf "${XTC_ABS}" final_npt.xtc
 
-echo 0 | gmx trjconv -s final_npt.tpr -f final_npt.xtc -dump "${start_time_ps}" -o start.gro
+printf "Protein\nSystem\n" | gmx trjconv -s final_npt.tpr -f final_npt.xtc \
+  -dump "${start_time_ps}" -o start.gro -pbc mol -center -ur compact
 
 ############################
 # Ensure index.ndx has [ Anchor ] and [ Pulled ] (build if needed)
