@@ -357,7 +357,7 @@ PY
 ) > pbcatom_config.json
 
 # Parse and resolve pbcatom indices
-python3 - <<'PY'
+python3 - <<PY
 import json
 import subprocess
 import sys
