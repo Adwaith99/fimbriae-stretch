@@ -35,36 +35,24 @@ fi
 FILTER_SYSTEM="${1:-}"
 FILTER_VARIANT="${2:-}"
 
-# Find all start_id directories (lowest level: smd/<system>/<variant>/v<speed>/rep<rep>/<start_id>)
-echo "[batch-preproc] Scanning for SMD runs..." >&2
+# Find finished start_id directories (lowest level: smd/<system>/<variant>/v<speed>/rep<rep>/<start_id>)
+echo "[batch-preproc] Scanning for finished SMD runs..." >&2
 
 tmpfile=$(mktemp)
 trap "rm -f ${tmpfile}" EXIT
 
-find smd -mindepth 5 -maxdepth 5 -type d -name "s*" 2>/dev/null | sort > "${tmpfile}" || true
+python3 scripts/list_finished_runs.py \
+  ${FILTER_SYSTEM:+--system "$FILTER_SYSTEM"} \
+  ${FILTER_VARIANT:+--variant "$FILTER_VARIANT"} \
+  > "${tmpfile}" || true
 
 total=$(wc -l < "${tmpfile}")
 if [[ "${total}" -eq 0 ]]; then
-  echo "[batch-preproc] No SMD runs found" >&2
+  echo "[batch-preproc] No finished SMD runs found" >&2
   exit 0
 fi
 
-echo "[batch-preproc] Found ${total} SMD run(s)" >&2
-
-# Filter by system/variant if specified
-if [[ -n "${FILTER_SYSTEM}" ]]; then
-  grep "smd/${FILTER_SYSTEM}/" "${tmpfile}" > "${tmpfile}.filtered" || true
-  mv "${tmpfile}.filtered" "${tmpfile}"
-  filtered=$(wc -l < "${tmpfile}")
-  echo "[batch-preproc] Filtered to ${filtered} run(s) for system=${FILTER_SYSTEM}" >&2
-fi
-
-if [[ -n "${FILTER_VARIANT}" ]]; then
-  grep "/${FILTER_VARIANT}/" "${tmpfile}" > "${tmpfile}.filtered" || true
-  mv "${tmpfile}.filtered" "${tmpfile}"
-  filtered=$(wc -l < "${tmpfile}")
-  echo "[batch-preproc] Filtered to ${filtered} run(s) for variant=${FILTER_VARIANT}" >&2
-fi
+echo "[batch-preproc] Found ${total} finished run(s)" >&2
 
 # Check if anything left to process
 if [[ ! -s "${tmpfile}" ]]; then
@@ -81,4 +69,3 @@ echo "[batch-preproc] Starting parallel processing (${JOBS} jobs)..." >&2
 cat "${tmpfile}" | parallel -j "${JOBS}" bash scripts/preproc_traj.sh {}
 
 echo "[batch-preproc] Done" >&2
-

@@ -19,6 +19,28 @@ set -euo pipefail
 ROOT="${1:-analysis/preproc_traj}"
 OUTDIR="${2:-analysis/movies_out}"
 
+# Find repo root
+find_root() {
+  local p="$PWD"
+  while [[ "$p" != "/" ]]; do
+    [[ -f "$p/config.yaml" ]] && { echo "$p"; return 0; }
+    p="$(dirname "$p")"
+  done
+  return 1
+}
+REPO_ROOT="$(find_root)"
+if [[ -z "${REPO_ROOT}" ]]; then
+  echo "ERROR: cannot locate repo root (config.yaml)" >&2
+  exit 2
+fi
+
+ROOT="$(python3 - <<PY
+import os
+print(os.path.abspath(r"""${ROOT}"""))
+PY
+)"
+BASE_PREPROC="${REPO_ROOT}/analysis/preproc_traj"
+
 STRIDE="${STRIDE:-1}"
 FPS="${FPS:-30}"
 WIDTH="${WIDTH:-1600}"
@@ -59,12 +81,40 @@ fi
 mkdir -p "$OUTDIR"
 mkdir -p "$OUTDIR/_frames"
 
-# Find leaf run dirs that contain start_protein.gro
-mapfile -t run_dirs < <(find "$ROOT" -type f -name start_protein.gro -print0 \
-  | xargs -0 -n1 dirname | sort -u)
+# Restrict to finished SMD runs and map to preproc dirs
+FILTER_SYS=""
+FILTER_VAR=""
+FILTER_SPEED=""
+FILTER_REP=""
+FILTER_START=""
+if [[ "$ROOT" == "$BASE_PREPROC"* ]]; then
+  rel="${ROOT#"$BASE_PREPROC"/}"
+  if [[ "$ROOT" == "$BASE_PREPROC" ]]; then
+    rel=""
+  fi
+  IFS='/' read -r FILTER_SYS FILTER_VAR FILTER_SPEED FILTER_REP FILTER_START <<< "$rel"
+  [[ -n "${FILTER_SPEED}" ]] && FILTER_SPEED="${FILTER_SPEED#v}"
+fi
+
+mapfile -t finished_runs < <(python3 "${REPO_ROOT}/scripts/list_finished_runs.py" \
+  ${FILTER_SYS:+--system "$FILTER_SYS"} \
+  ${FILTER_VAR:+--variant "$FILTER_VAR"} \
+  ${FILTER_SPEED:+--speed "$FILTER_SPEED"} \
+  ${FILTER_REP:+--rep "$FILTER_REP"} \
+  ${FILTER_START:+--start "$FILTER_START"} \
+)
+
+run_dirs=()
+for run in "${finished_runs[@]:-}"; do
+  rel="${run#smd/}"
+  IFS='/' read -r sys var vtag rep start_id <<< "$rel"
+  [[ -z "${sys}" || -z "${var}" || -z "${vtag}" || -z "${rep}" || -z "${start_id}" ]] && continue
+  preproc_dir="${BASE_PREPROC}/${sys}/${var}/${vtag}/${rep}/${start_id}"
+  [[ -f "${preproc_dir}/start_protein.gro" ]] && run_dirs+=( "${preproc_dir}" )
+done
 
 if [[ ${#run_dirs[@]} -eq 0 ]]; then
-  echo "No runs found under $ROOT (looking for start_protein.gro)"
+  echo "No finished runs found under $ROOT (looking for start_protein.gro)"
   exit 0
 fi
 
